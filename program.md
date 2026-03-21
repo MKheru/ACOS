@@ -1,0 +1,26 @@
+### **Titre de la Recherche (v2) :**
+**Conception d'un Système d'Exploitation Agent-Centric (ACOS) en Rust : Architecture Hybride pour les Workflows d'IA et les Applications de Productivité Essentielles.**
+
+### **Postulat de départ (inchangé) :**
+Les systèmes d'exploitation contemporains (Windows, macOS, Linux) sont l'aboutissement d'une évolution de 50 ans centrée sur le paradigme de l'Interface Graphique Utilisateur (GUI), de la manipulation directe de fichiers et de la gestion de processus pour des applications généralistes. L'émergence des grands modèles de langage (LLM) et des agents IA travaillant principalement via des interfaces en ligne de commande (CLI) ou des API introduit une rupture. Ces OS actuels imposent une surcharge systémique (gestion de fenêtres, services graphiques, pilotes d'affichage complexes) qui devient superflue, voire contre-productive, pour un utilisateur dont l'interaction principale avec la machine est devenue conversationnelle et orientée "tâche".
+
+### **Thèse Principale (mise à jour) :**
+Il est possible de concevoir une nouvelle architecture de système d'exploitation, initialement écrite en **Rust** pour ses garanties de sécurité et de performance. Cet OS, **ACOS (Agent-Centric Operating System)**, abandonnera l'héritage de la GUI comme paradigme central pour se concentrer sur l'efficacité des interactions avec des agents IA. Il intégrera cependant un **sous-système graphique isolé et optionnel** pour assurer la compatibilité avec un ensemble restreint d'applications humaines critiques, telles qu'un navigateur web et un environnement de développement.
+
+### **Axes de Recherche et d'Exploration :**
+
+1.  **Axe Vertical (Profondeur du Système) :**
+    *   **Noyau (Kernel) & Ordonnancement :** Repenser l'ordonnanceur de tâches (scheduler). Au lieu d'optimiser la réactivité d'une interface graphique, il doit prioriser des "bursts" de calcul (inférence de modèles), des accès mémoire massifs, et la gestion de très nombreux processus légers ou "threads" représentant des sous-tâches d'agents. Faut-il un ordonnanceur spécifique pour les tenseurs et les opérations neuronales ?
+    *   **Système de Fichiers & Gestion d'État :** Le concept de "fichier" est-il encore pertinent ? On pourrait explorer un système de gestion de l'information basé non plus sur une arborescence, mais sur un graphe d'objets ou une base de données vectorielle native. L'OS gérerait nativement les "contextes" de conversation, les prompts, les résultats, et leurs relations, plutôt que de simples "fichiers texte".
+    *   **Le Shell Réinventé :** Le shell ne serait plus une simple boucle REPL (Read-Eval-Print Loop) comme `bash` ou `zsh`. Il deviendrait une "Méta-Interface Agentique" : un superviseur d'agents capable de comprendre le langage naturel, de paralléliser des requêtes vers différents outils (Gemini, Claude...), d'agréger les résultats et de maintenir un état de la tâche globale.
+
+2.  **Axe Horizontal (Étendue du Système) :**
+    *   **Architecture Hybride et Sous-système Graphique :** C'est un point de recherche majeur. Comment exécuter des applications graphiques complexes (navigateur, IDE type VS Code) sans compromettre la philosophie minimaliste ?
+        *   **Hypothèse :** Implémenter un serveur d'affichage minimal (ex: un compositeur Wayland léger) fonctionnant dans un conteneur ou un "bac à sable" strict. Ce sous-système ne serait activé qu'à la demande explicite de l'utilisateur pour une application spécifique, laissant le cœur de l'OS libre de toute charge graphique le reste du temps.
+    *   **Co-conception Matériel-Logiciel :** En respectant le matériel actuel, comment l'OS pourrait-il mieux l'exploiter ? (ex: accès plus direct au GPU/NPU en contournant des couches de pilotes graphiques).
+        *   **Propositions d'évolution :** Quel serait le PC idéal pour ACOS ? Intégration d'une "RAM contextuelle" (mémoire ultra-rapide dédiée au contexte des LLMs) ? Un CPU avec des cœurs spécialisés dans l'orchestration de tâches asynchrones ? Une architecture où le GPU n'est plus sur un bus PCIe mais est un co-processeur plus intégré ?
+    *   **Sécurité et Sandboxing :** Si l'OS exécute en permanence des agents qui peuvent accéder à des données ou exécuter du code, le modèle de sécurité doit être repensé. Il faudrait un système de "capacités" et de sandboxing extrêmement granulaire et natif, où chaque agent se voit allouer des permissions explicites (accès réseau, lecture de "contextes" spécifiques, etc.).
+
+3.  **Écosystème Développeur et Trajectoire du Langage :**
+    *   **Phase 1 (Implémentation) :** Le développement du noyau ACOS et de ses composants principaux se fera **exclusivement en Rust**. L'objectif est de maximiser la sûreté de la mémoire et la performance "bare-metal", tout en bénéficiant d'un écosystème moderne. Les API système seront exposées avec des "bindings" Rust natifs.
+    *   **Phase 2 (Recherche Prospective) :** Une fois ACOS fonctionnel, un axe de recherche secondaire sera initié. Il consistera à **utiliser l'IA pour spécifier et prototyper un nouveau langage de programmation**. Ce langage serait sémantiquement plus proche du fonctionnement des modèles de raisonnement de l'IA, visant à rendre l'écriture d'agents complexes plus intuitive, plus sûre et plus performante que les approches actuelles.
