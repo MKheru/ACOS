@@ -31,8 +31,16 @@ mkdir -p "$SOURCE_DIR/mcp_scheme"
 cp -r "$PROJECT_DIR/components/mcp_scheme/src" "$SOURCE_DIR/mcp_scheme/src"
 cp "$PROJECT_DIR/components/mcp_scheme/Cargo.toml" "$SOURCE_DIR/mcp_scheme/Cargo.toml"
 
+# Copy llm_engine crate (LLM inference dependency of mcp_scheme)
+mkdir -p "$SOURCE_DIR/llm_engine"
+cp -r "$PROJECT_DIR/components/llm_engine/src" "$SOURCE_DIR/llm_engine/src"
+cp "$PROJECT_DIR/components/llm_engine/Cargo.toml" "$SOURCE_DIR/llm_engine/Cargo.toml"
+
 # Fix the path dependency in mcpd's Cargo.toml to point to local mcp_scheme
 sed -i 's|path = "../mcp_scheme"|path = "mcp_scheme"|' "$SOURCE_DIR/Cargo.toml"
+
+# Fix llm_engine path in mcp_scheme's Cargo.toml
+sed -i 's|path = "../llm_engine"|path = "../llm_engine"|' "$SOURCE_DIR/mcp_scheme/Cargo.toml"
 
 # Remove dev-dependencies (benchmarks) from mcp_scheme to avoid build issues
 # in the cross-compilation environment

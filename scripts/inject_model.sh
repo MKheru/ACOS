@@ -2,7 +2,7 @@
 #
 # Inject LLM model weights into the ACOS disk image.
 #
-# Mounts the Redox FS image via redoxfs, copies the model file to
+# Mounts the ACOS disk image via redoxfs, copies the model file to
 # /usr/share/llm/ inside the image, then unmounts.
 #
 # Usage: ./scripts/inject_model.sh <model_file.gguf>
