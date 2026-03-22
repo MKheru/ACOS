@@ -1,42 +1,49 @@
 # Architecture ACOS (Agent-Centric OS)
 
-*Statut : Version 2.1 - Affinée suite à l'audit matériel et Deep Dive Exokernel.*
+*Statut : Version 3.0 - Le "Cheat Code" Linux/Rust & Le Bus MCP.*
 
 ## 1. Vision Globale
-ACOS est une réinvention du système d'exploitation basée sur un postulat : **L'IA est le travailleur principal, l'humain est le superviseur.** L'architecture maximise les performances de l'IA (accès bas niveau) tout en garantissant la **souveraineté humaine** via des interruptions matérielles prioritaires.
+ACOS est le premier système d'exploitation où le **Model Context Protocol (MCP)** n'est pas un outil utilisateur, mais le **bus système natif (IPC)**. L'IA est le citoyen de première classe. L'humain interagit via un sous-système web/WASM, qui est entièrement pilotable par l'IA.
 
-## 2. L'Architecture : Exokernel Rust & WASM Ecosystem
+## 2. Le Noyau : Le pragmatisme "Rust-for-Linux" (RFL)
 
-### 2.1. Audit Critique et Pivot Matériel (Le Mur des Pilotes)
-L'audit d'expertise (Round 8) a révélé que confier l'accès GPU "nu" aux agents IA sur un PC générique (avec des pilotes NVIDIA/AMD propriétaires) est un cauchemar d'ingénierie.
-**Ajustement Stratégique :** Pour être développable, le prototype ACOS ne visera pas le PC générique fragmenté. Il ciblera un matériel unifié (Soc), comme les puces ARM avec NPU intégré, ou nécessitera un GPU open-source spécifique.
+Coder un Exokernel de zéro pour un PC moderne est une impasse (le "mur des pilotes"). ACOS utilise une approche hybride radicale :
 
-### 2.2. Plongée Technique : Que fait concrètement l'Exokernel Rust ?
-Contrairement à Linux qui possède 30 millions de lignes de code, l'Exokernel ACOS ne dépassera pas les 50 000 lignes. Ses rôles exclusifs sont :
+### 2.1. La Fondation Linux "Éviscérée"
+ACOS boot sur un noyau Linux standard, mais extrêmement minimaliste (custom kernel build). Son seul but est d'apporter le support matériel gratuit (pilotes GPU propriétaires, USB, PCIe, gestion d'énergie). L'espace utilisateur GNU/Linux classique (systemd, bash, X11) est totalement supprimé.
 
-1.  **Boot & Initialisation (HAL) :** Démarrer le CPU, passer en mode 64 bits, configurer la table des interruptions (IDT/GDT).
-2.  **Gestionnaire de RAM Brut :** Il ne gère pas de "mémoire virtuelle" complexe. Il tient juste un registre des pages physiques libres et les distribue (Page Allocator).
-3.  **Multiplexeur PCIe & IOMMU :** C'est son rôle crucial. Il assigne une adresse matérielle (ex: le NPU ou la carte réseau) à un Agent spécifique. Grâce à l'IOMMU, il garantit matériellement que l'Agent A ne peut pas lire la RAM matérielle de l'Agent B.
-4.  **Le Gardien du NMI (Non-Maskable Interrupt) :** Il gère la boucle d'interruption du clavier. Dès qu'une touche est pressée, l'Exokernel suspend l'horloge des processeurs assignés à l'IA.
+### 2.2. L'Hyper-Module Rust ACOS
+Toute l'intelligence "Agent-Centric" est implémentée sous forme de **modules noyau écrits en Rust** (via l'infrastructure *Rust-for-Linux*). 
+- Ce module Rust prend le contrôle de l'ordonnanceur Linux (via eBPF ou des hooks profonds).
+- Il garantit l'interruption de sécurité humaine (NMI) : il surveille les interruptions des périphériques d'entrée pour suspendre les calculs GPU de l'Agent.
 
-**Ce qu'il NE FAIT PAS :** Pas de TCP/IP, pas de système de fichiers (Ext4/FAT), pas de fenêtres, pas de pilotes de clavier USB complexes (il utilise des protocoles polling très basiques).
+## 3. Le Bus Système : MCP (Model Context Protocol) au niveau OS
 
-### 2.3. Le "Cognitive Engine" (Library OS)
-Les modèles d'IA intègrent directement (statiquement ou dynamiquement) les bibliothèques réseau (ex: une stack TCP/IP en Rust en espace utilisateur comme *smoltcp*) et les pilotes d'inférence (ex: llama.rs compilé pour attaquer directement l'adresse PCIe du GPU que l'exokernel lui a donné).
+Sur Linux, les processus se parlent via des pipes, des sockets ou D-Bus. Sur ACOS, **les processus se parlent en MCP**.
 
-### 2.4. Le Sous-système Humain : WASM / WASI
-L'environnement de l'utilisateur (Shell, IDE) tourne dans un runtime WebAssembly.
-*Note de développement :* L'interface graphique WASI étant encore balbutiante, le prototype ACOS commencera par un "Agent Shell" purement textuel en WASM, avant d'intégrer un compositeur graphique complet.
+### 3.1. Tout est un Serveur MCP
+- Le système de fichiers n'est pas monté classiquement, il est exposé par le noyau comme un "Serveur MCP Fichier".
+- Le GPU est exposé comme un "Serveur MCP Calcul".
+- Le Navigateur Web/IDE (tournant dans l'espace humain) expose son état interne (DOM, onglets ouverts) via un "Serveur MCP UI".
 
-## 3. Estimation de Développement (Phase Prototype)
+### 3.2. Le Superviseur IA (Le Cerveau)
+L'Agent IA principal tourne comme le processus init (PID 1) de l'ACOS.
+Puisque le Navigateur expose ses contrôles via MCP, l'Agent IA peut nativement et instantanément :
+- "Lis l'onglet 2 du navigateur."
+- "Clique sur ce bouton dans le DOM."
+- "Ouvre VS Code et tape ce code."
+L'Agent contrôle l'interface humaine comme une simple API, sans avoir besoin de simuler des clics de souris hasardeux.
 
-Le développement d'un OS (même un exokernel) est la tâche d'ingénierie la plus complexe en informatique.
+## 4. L'Interface Humaine : Le Bac à Sable WebApps/WASM
 
-*   **Équipe cible :** 1 Ingénieur Système Senior (spécialiste Rust bare-metal) + 1 Spécialiste IA.
-*   **Temps estimé pour un Prototype de Faisabilité (MVP) :** **6 à 9 mois**.
+L'humain n'a pas accès au système de fichiers sous-jacent. Son environnement visuel est un "Thin Client" (Client Léger) :
 
-**Phases du MVP :**
-1.  **Mois 1-2 (Boot & Memory) :** Bootloader UEFI, allocation de pages physiques en Rust, gestion des interruptions de base sur QEMU (émulateur).
-2.  **Mois 3-4 (Isolation IOMMU & PCIe) :** Écriture du code d'énumération du bus PCIe. Configuration de l'IOMMU pour isoler un périphérique PCIe virtuel.
-3.  **Mois 5-6 (Library OS & Inférence) :** Compilation d'un micro-modèle IA (type Llama 2 15M) capable de tourner sans Linux, juste avec les accès donnés par l'exokernel.
-4.  **Mois 7-8 (Intégration WASM) :** Portage du runtime Wasmtime dans un Library OS pour faire tourner le shell de l'utilisateur. Validation de l'interruption matérielle d'urgence (NMI).
+- **Le Compositeur :** Un compositeur Wayland ultra-basique écrit en Rust, géré par le module noyau ACOS.
+- **L'Exécuteur :** Une WebView/WASM engine (type Tauri/Servo) en plein écran.
+- **L'Expérience :** L'utilisateur utilise des WebApps (VS Code Web, Navigateurs). Lorsqu'il a besoin d'une action, il demande à l'Agent IA. L'Agent utilise le bus MCP pour "piloter" la WebApp devant les yeux de l'utilisateur, ou travaille en tâche de fond.
+
+## 5. Nouveau Chronogramme de Développement (Réaliste)
+Grâce à l'utilisation de la base Linux et de Rust-for-Linux :
+- **Mois 1 :** Création du noyau Linux minimal et implémentation du "Bus MCP" en espace noyau via Rust.
+- **Mois 2 :** Intégration du superviseur IA (PID 1) et de la communication avec le bus MCP noyau.
+- **Mois 3 :** Lancement du compositeur Wayland minimal et de la WebView pour afficher l'interface humaine. Validation du contrôle de la WebView par l'Agent via MCP.
