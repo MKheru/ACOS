@@ -42,7 +42,7 @@ Rust            │                      │   (généraliste)   │
 
 ## Structure des Workstreams
 
-Le développement est organisé en **7 workstreams** indépendants, chacun avec ses branches AutoResearch.
+Le développement est organisé en **8 workstreams** indépendants, chacun avec ses branches AutoResearch.
 
 ```
 ACOS Development Tree
@@ -53,7 +53,8 @@ ACOS Development Tree
 ├── WS4: LLM Runtime (moteur d'inférence local)
 ├── WS5: AI Supervisor (orchestration, tool calls, mémoire)
 ├── WS6: Developer Experience (SDK, docs, tooling)
-└── WS7: Human Interface (terminal IA, Servo/WASM, voix)
+├── WS7: Konsole — Multi-Console Natif & Display Manager
+└── WS8: Human Interface (terminal IA, Servo/WASM, voix)
 ```
 
 ---
@@ -229,23 +230,170 @@ beta/ws4-llm-engine
 
 ---
 
-## WS7: Human Interface — Le Pont Humain-IA
+## WS7: Konsole — Multi-Console Natif & Display Manager
 
-**Objectif :** L'utilisateur interagit avec ACOS via un terminal intelligent et/ou une interface web.
+**Objectif :** ACOS possède un multiplexeur de terminaux **natif au noyau**, pas une app userspace comme tmux. Chaque console est un scheme MCP. L'IA dispose de ses propres consoles dédiées en permanence.
+
+### Pourquoi c'est fondamental (pas cosmétique)
+
+Sur Linux, tmux est un hack brillant : un processus userspace qui émule plusieurs terminaux dans un seul PTY. Mais c'est une couche d'abstraction au-dessus d'une couche d'abstraction (PTY → terminal → shell). L'IA qui utilise Claude Code/Codex doit lancer tmux, créer des panes, parser du texte ANSI — c'est absurde.
+
+**Dans ACOS, le multiplexage est un scheme kernel.** Chaque console est un `mcp://konsole/N` que n'importe quel processus (humain ou IA) peut ouvrir, lire, écrire, redimensionner, et monitorer via MCP.
+
+### Architecture Konsole
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ÉCRAN PHYSIQUE / QEMU                     │
+│                                                              │
+│  ┌─────────────────────┐  ┌────────────────────────────┐   │
+│  │ Konsole 0 (Root IA) │  │ Konsole 1 (Utilisateur)    │   │
+│  │ ═══════════════════  │  │ ═══════════════════════    │   │
+│  │ [acosd] Monitoring:  │  │ user@acos:~$               │   │
+│  │ CPU: 23% MEM: 1.2G   │  │ > Montre-moi les logs      │   │
+│  │ Services: 5 actifs   │  │ [IA] Voici les 10 derniers │   │
+│  │ Dernière action:     │  │ logs système...             │   │
+│  │ "optimisé scheduler" │  │                             │   │
+│  │                      │  │                             │   │
+│  │ [Alertes]            │  │                             │   │
+│  │ ⚠ RAM > 80%          │  │                             │   │
+│  ├──────────────────────┤  ├─────────────────────────────┤   │
+│  │ Konsole 2 (Agent #1) │  │ Konsole 3 (Agent #2)       │   │
+│  │ ═══════════════════  │  │ ═══════════════════════    │   │
+│  │ [claude] Building... │  │ [agent] Scanning network   │   │
+│  │ cargo build --rel    │  │ Found 3 devices on LAN     │   │
+│  │ Compiling mcp_sch... │  │ 192.168.1.1 - router       │   │
+│  │ ████████████░░ 78%   │  │ 192.168.1.42 - NAS         │   │
+│  └──────────────────────┘  └─────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Les 4 types de consoles ACOS
+
+| Type | Propriétaire | Persistance | Usage |
+|---|---|---|---|
+| **Konsole Root IA** | `acosd` (superviseur) | Permanente, toujours visible | Monitoring, alertes, actions autonomes |
+| **Konsole Utilisateur** | L'humain | Permanente | Shell conversationnel, interaction avec l'IA |
+| **Konsole Agent** | Un agent IA (Claude, etc.) | Éphémère (durée de la tâche) | Build, tests, exploration, développement |
+| **Konsole Service** | Un daemon MCP | Éphémère | Logs, debug, monitoring d'un service spécifique |
+
+### La Konsole Root IA — Le différenciateur
+
+C'est la console que **l'IA occupe en permanence**. Elle est toujours affichée (en sidebar ou en split). L'utilisateur peut la lire à tout moment pour voir ce que l'IA fait, pense, et planifie. L'IA peut aussi y **poser des questions à l'utilisateur** :
+
+```
+[acosd @ Konsole 0]
+──────────────────────────
+11:42:03 Optimisation du scheduler terminée. Gain: +12% throughput.
+11:42:15 Détecté: 3 fichiers non utilisés depuis 90 jours dans /home/user/Downloads
+         → Voulez-vous les archiver ? [y/n/later]
+11:43:01 Agent Claude a demandé l'accès à mcp://net/http (permission réseau)
+         → Autoriser pour cette session ? [y/n/always]
+11:44:30 Mise à jour disponible pour le service mcp://file (v0.2.1 → v0.3.0)
+         → Changelog: +recherche sémantique, +compression. Installer ? [y/n]
+```
+
+L'utilisateur répond dans SA console (Konsole 1) ou directement dans la Konsole Root.
+
+### MCP API des Konsoles
+
+Chaque console est un scheme MCP :
+
+```
+mcp://konsole/list                    → Liste toutes les consoles actives
+mcp://konsole/0                       → La Root IA (lecture seule pour l'utilisateur)
+mcp://konsole/1                       → Console utilisateur
+mcp://konsole/create                  → Créer une nouvelle console
+mcp://konsole/0/resize {cols:80,rows:24}  → Redimensionner
+mcp://konsole/0/read                  → Lire le contenu actuel
+mcp://konsole/0/write {data:"..."}    → Écrire (si autorisé)
+mcp://konsole/layout                  → Gérer le layout (split, tabs, etc.)
+```
+
+### Display Manager natif
+
+Le layout des consoles est géré par un **display manager MCP** intégré :
+
+```
+mcp://display/layout {
+  "type": "split",
+  "direction": "horizontal",
+  "ratio": [30, 70],
+  "left": {"konsole": 0},          // Root IA (30% gauche)
+  "right": {
+    "type": "split",
+    "direction": "vertical",
+    "ratio": [60, 40],
+    "top": {"konsole": 1},         // Utilisateur (haut droite)
+    "bottom": {"konsole": 2}        // Agent (bas droite)
+  }
+}
+```
+
+Le display manager gère aussi le **multi-écran** :
+```
+mcp://display/screens                  → Liste les écrans physiques
+mcp://display/screens/0/assign {konsoles: [0, 1]}  → Écran principal
+mcp://display/screens/1/assign {konsoles: [2, 3]}  → Écran secondaire
+mcp://display/screens/1/fullscreen {konsole: 2}     → Agent en plein écran
+```
 
 ### Tâches
 
 | # | Tâche | Complexité | Mode | Branche |
 |---|---|---|---|---|
-| 7.1 | Terminal MCP : affichage riche (markdown, tableaux, code coloré) | Moyen | Dev | `beta/ws7-terminal` |
-| 7.2 | Autocomplétion IA dans le terminal | Moyen | **AutoResearch** | `beta/ws7-autocomplete` |
-| 7.3 | Historique conversationnel persistant | Facile | Dev | `beta/ws7-history` |
-| 7.4 | Intégrer Servo (moteur web Rust) pour les WebApps | Très dur | Dev | `beta/ws7-servo` |
-| 7.5 | Exposer le DOM de Servo via `mcp://ui/dom` | Très dur | Dev | `beta/ws7-dom-mcp` |
-| 7.6 | Notifications système via MCP | Facile | Dev | `beta/ws7-notifications` |
-| 7.7 | Interface vocale (STT → MCP → LLM → TTS) | Très dur | Dev | `beta/ws7-voice` |
-| 7.8 | Dashboard système web (CPU, RAM, services, logs) accessible via Servo | Dur | Dev | `beta/ws7-dashboard` |
-| 7.9 | Thèmes et personnalisation visuelle | Facile | Dev | `beta/ws7-themes` |
+| 7.1 | **Scheme `konsole:`** — chaque console est un scheme MCP dans mcpd | Dur | Dev | `beta/ws7-konsole-scheme` |
+| 7.2 | **Konsole manager** — créer/détruire/lister des consoles | Moyen | Dev | `beta/ws7-konsole-mgr` |
+| 7.3 | **Framebuffer renderer** — rendu texte sur framebuffer VGA/virtio | Dur | Dev | `beta/ws7-framebuffer` |
+| 7.4 | **Layout engine** — split horizontal/vertical, tabs, resize | Dur | **AutoResearch** | `beta/ws7-layout` |
+| 7.5 | **Konsole Root IA** — console dédiée acosd, toujours visible | Moyen | Dev | `beta/ws7-root-konsole` |
+| 7.6 | **Input routing** — les touches clavier vont à la console focusée | Moyen | Dev | `beta/ws7-input` |
+| 7.7 | **Raccourcis clavier** — switch console, split, resize (à la tmux) | Moyen | Dev | `beta/ws7-keybindings` |
+| 7.8 | **Scrollback buffer** — historique scrollable par console | Moyen | Dev | `beta/ws7-scrollback` |
+| 7.9 | **Multi-écran** — détecter et gérer N écrans physiques | Dur | Dev | `beta/ws7-multiscreen` |
+| 7.10 | **Assignation écran** — assigner des consoles à des écrans via MCP | Moyen | Dev | `beta/ws7-screen-assign` |
+| 7.11 | **Détachement/Rattachement** — comme tmux attach/detach mais natif | Moyen | Dev | `beta/ws7-detach` |
+| 7.12 | **Rendu riche** — markdown, couleurs, tableaux, barres de progression | Dur | **AutoResearch** | `beta/ws7-rich-render` |
+| 7.13 | **Notification cross-console** — un service peut notifier une autre console | Facile | Dev | `beta/ws7-notifications` |
+| 7.14 | **Session recording** — enregistrer/rejouer une session console | Moyen | Dev | `beta/ws7-recording` |
+| 7.15 | **Performance** — latence input-to-display < 16ms (60fps) | Dur | **AutoResearch** | `beta/ws7-perf` |
+
+**Critère de merge :** 4 consoles simultanées (Root IA, Utilisateur, 2 Agents) affichées en split, avec input routing correct, latence < 16ms.
+
+**Métriques AutoResearch :**
+- Latence input-to-display (ms) — target < 16 (60fps)
+- RAM par console (KB) — target < 256
+- Layout recalculation time (μs) — target < 1000
+- Scrollback search time pour 10K lignes (ms) — target < 50
+
+### Pourquoi avant WS8 (Interface humaine) ?
+
+Le multi-console est une **dépendance** de WS8 (Servo/WASM) et de WS5 (AI Supervisor). L'IA ne peut pas opérer efficacement sans ses propres consoles. Les agents comme Claude Code ne peuvent pas travailler sans multi-pane. Le display manager est nécessaire avant toute interface graphique.
+
+```
+WS7 (Konsole) ──→ WS5 (Supervisor utilise Root Konsole)
+     │
+     └──→ WS8 (Servo s'affiche dans une Konsole)
+```
+
+---
+
+## WS8: Human Interface — Le Pont Humain-IA
+
+**Objectif :** L'utilisateur interagit avec ACOS via un terminal intelligent et/ou une interface web, le tout rendu dans des Konsoles.
+
+### Tâches
+
+| # | Tâche | Complexité | Mode | Branche |
+|---|---|---|---|---|
+| 8.1 | Terminal MCP conversationnel (prompt IA, pas shell classique) | Moyen | Dev | `beta/ws8-terminal` |
+| 8.2 | Autocomplétion IA dans le terminal | Moyen | **AutoResearch** | `beta/ws8-autocomplete` |
+| 8.3 | Historique conversationnel persistant | Facile | Dev | `beta/ws8-history` |
+| 8.4 | Intégrer Servo (moteur web Rust) comme Konsole spéciale | Très dur | Dev | `beta/ws8-servo` |
+| 8.5 | Exposer le DOM de Servo via `mcp://ui/dom` | Très dur | Dev | `beta/ws8-dom-mcp` |
+| 8.6 | Interface vocale (STT → MCP → LLM → TTS) | Très dur | Dev | `beta/ws8-voice` |
+| 8.7 | Dashboard système web dans une Konsole Servo | Dur | Dev | `beta/ws8-dashboard` |
+| 8.8 | Thèmes et personnalisation visuelle | Facile | Dev | `beta/ws8-themes` |
 
 ---
 
@@ -258,21 +406,23 @@ WS1 ████████████████░░░░░░░░  Ke
 WS2 ████████████████████████  MCP Bus complet
 WS6 ████████░░░░░░░░░░░░░░░░  README + CI + quickstart
 
-Trimestre 2 (Phase Services)
-════════════════════════════
+Trimestre 2 (Phase Services + Konsole)
+══════════════════════════════════════
 WS3 ████████████████████████  Tous les services system/file/net
 WS4 ████████████████░░░░░░░░  LLM Runtime (évaluation + intégration)
+WS7 ████████████████████████  Konsole multi-console natif ← PRIORITAIRE
 WS6 ░░░░████████████████████  SDK + docs + tutoriels
 
 Trimestre 3 (Phase Intelligence)
 ════════════════════════════════
-WS5 ████████████████████████  AI Supervisor complet
+WS5 ████████████████████████  AI Supervisor (utilise Root Konsole)
 WS4 ░░░░░░░░████████████████  Optimisation LLM (GPU, hot-swap)
-WS7 ████████████░░░░░░░░░░░░  Terminal IA
+WS7 ░░░░░░░░░░░░████████████  Multi-écran, recording, perf
+WS8 ████████████░░░░░░░░░░░░  Terminal IA conversationnel
 
 Trimestre 4 (Phase Interface)
 ═════════════════════════════
-WS7 ░░░░░░░░░░░░████████████  Servo/WASM, Dashboard, Voix
+WS8 ░░░░░░░░░░░░████████████  Servo/WASM, Dashboard, Voix
 WS5 ░░░░░░░░░░░░░░░░████████  Auto-diagnostic, multi-agents
 WS6 ░░░░░░░░░░░░████████████  Plugins, benchmarks publics
 ```
@@ -283,10 +433,13 @@ WS6 ░░░░░░░░░░░░████████████  Pl
 WS1 (Identity) ──→ WS6 (DX) ──→ Community launch
      │
      ▼
-WS2 (MCP Bus) ──→ WS3 (Services) ──→ WS5 (Supervisor) ──→ WS7 (UI)
-                       │                    ▲
-                       ▼                    │
-                  WS4 (LLM Runtime) ────────┘
+WS2 (MCP Bus) ──→ WS3 (Services) ──→ WS7 (Konsole) ──→ WS5 (Supervisor)
+                       │                    │                   │
+                       ▼                    ▼                   ▼
+                  WS4 (LLM Runtime) ──→ WS5 (utilise Konsole Root)
+                                                                │
+                                                                ▼
+                                                          WS8 (UI dans Konsole)
 ```
 
 ---
@@ -349,10 +502,11 @@ L'OS s'améliore lui-même.
 |---|---|---|
 | **v0.1 — First Light** | Boot + MCP scheme + echo service | ✅ Fait |
 | **v0.2 — Services** | system + file + net via MCP | T1 |
-| **v0.3 — Intelligence** | LLM runtime + superviseur basique | T2 |
-| **v0.4 — Conversation** | Shell IA conversationnel | T3 |
-| **v0.5 — Self-Aware** | Auto-diagnostic + self-healing | T4 |
-| **v1.0 — First Contact** | OS complet utilisable en daily | T5+ |
+| **v0.3 — Konsole** | Multi-console natif + Root IA + display manager | T2 |
+| **v0.4 — Intelligence** | LLM runtime + superviseur dans Root Konsole | T2-T3 |
+| **v0.5 — Conversation** | Shell IA conversationnel dans Konsole utilisateur | T3 |
+| **v0.6 — Self-Aware** | Auto-diagnostic + self-healing + multi-agents | T4 |
+| **v1.0 — First Contact** | OS complet utilisable en daily, multi-écran | T5+ |
 
 ---
 
