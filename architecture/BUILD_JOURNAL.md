@@ -256,3 +256,142 @@ Le script détecte "panic" dans la sortie série. `smolnetd` (réseau) panic ave
 - 24 tests passent (vs 9 en WS1)
 - MCP conformité : 100% (9/9 méthodes)
 - Echo roundtrip latency : 436ns (host bench)
+
+---
+
+## WS3 : System Services — 8 services MCP fonctionnels (2026-03-22)
+
+### Objectif
+Remplacer les daemons Redox natifs par des services MCP dans mcpd. Chaque interaction système passe par `mcp://`.
+
+### Phase A : Implémentation parallèle (APEX v2.1, 3 agents)
+
+**3 fichiers handler créés en parallèle :**
+
+| Fichier | Services | Handlers |
+|---|---|---|
+| `system_handlers.rs` (205 lignes) | system/info, process/list, memory/stats | SystemInfoHandler, ProcessHandler, MemoryHandler |
+| `file_handlers.rs` (332 lignes) | file/read, file/write, file/search | FileReadHandler, FileWriteHandler, FileSearchHandler |
+| `support_handlers.rs` (358 lignes) | log, config | LogHandler, ConfigHandler |
+
+**Chaque handler implémente le trait `ServiceHandler` :**
+```rust
+pub trait ServiceHandler: Send {
+    fn handle(&self, path: &McpPath, request: &JsonRpcRequest) -> JsonRpcResponse;
+    fn list_methods(&self) -> Vec<&str>;
+}
+```
+
+**Dual-mode :** `#[cfg(not(target_os = "redox"))]` (host mock) et `#[cfg(target_os = "redox")]` (real data).
+
+### Phase B : Intégration + Tests
+
+- 3 `mod` declarations + 8 `router.register()` dans `McpScheme::new()`
+- `SystemHandler` supprimé de handler.rs (remplacé par SystemInfoHandler)
+- **44 tests passent** (24 existants + 20 nouveaux)
+- Tests couvrent : roundtrip pour chaque service, path traversal rejection, config CRUD, log write/read
+
+### Phase C : Review adversariale
+
+**12 findings identifiés par 2 reviewers (security + logic) :**
+
+| Sévérité | Findings | Exemples |
+|---|---|---|
+| HIGH (3) | Path traversal (abs paths), symlink-loop DoS, unconstrained write | Fixé : validate_path par components, ALLOWED_ROOT, MAX_SEARCH_DEPTH |
+| MEDIUM (3) | OOM file read, Mutex unwrap panic, substring check | Fixé : 10 MiB limit, poison-safe lock, component-based check |
+| LOW (6) | Error codes, info disclosure, connection ID wrap | Fixé : generic errors, correct JSON-RPC codes, free-slot search |
+
+**Tous les 12 corrigés, 44 tests passent après fixes.**
+
+### Phase D : Benchmarks (criterion)
+
+| Service | Latence | < 10μs |
+|---|---|---|
+| memory/stats | 628 ns | ✅ |
+| system/info | 939 ns | ✅ |
+| process/list | 1061 ns | ✅ |
+| config/set+get | 1848 ns | ✅ |
+| log/write | 2473 ns | ✅ |
+| file/read | 7482 ns | ✅ |
+| file/write | 8578 ns | ✅ |
+
+### Phase E : Cross-compilation + Boot
+
+- Cross-compile : `--no-default-features --features redox` (résout le conflit `host-test` + `redox`)
+- Binary : **876K** static ELF (vs 792K en WS2)
+- Boot QEMU : `ACOS_BOOT_OK` en 4s
+
+### Phase F : Bugs runtime découverts et fixés
+
+**Bug 1 : mcpd ne démarrait pas — `notify mcpd` dans acos.toml**
+- `notify` utilise le protocole `Daemon::spawn` (byte readiness)
+- mcpd utilise `SchemeDaemon::new` (capability fd)
+- **Fix :** `scheme mcp mcpd` dans acos.toml → utilise `SchemeDaemon::spawn`
+
+**Bug 2 : `cat mcp:system` ne renvoyait rien**
+- `cat` fait `open() → read()` mais jamais `write()`
+- Le protocole scheme MCP nécessite `open() → write(request) → read(response) → close()`
+- **Fix :** Créé `mcp-query` (545K), outil CLI dédié qui fait open+write+read sur le même fd
+
+**Bug 3 : Données système à zéro (kernel, memory, processes)**
+- mcpd appelle `setrens(0,0)` après `ready_sync_scheme()` → null namespace
+- Les handlers ne peuvent plus lire `/scheme/sys/` au runtime
+- **Fix :** Cache les données au moment de la construction des handlers (AVANT setrens)
+
+### Phase G : AutoResearch — Formats /scheme/sys/ (Round 1)
+
+**Méthode :** Ajout de prints diagnostiques dans mcpd AVANT setrens, capture via serial output QEMU.
+
+**Formats réels découverts :**
+
+| Fichier | Format | Notes |
+|---|---|---|
+| `/scheme/sys/uname` | 4 lignes : `OS\nversion\narch\nhash\n` | Parser : `lines()`, concat `OS-version-arch` |
+| `/scheme/sys/context` | Table TSV : `PID EUID EGID STAT CPU AFFINITY TIME MEM NAME` | Parser : skip header, field[0]=PID, last=NAME |
+| `/scheme/sys/memory` | **N'existe pas** | Kernel Redox n'implémente pas ce fichier |
+| `/scheme/sys/uptime` | **N'existe pas** | Idem |
+| `/etc/hostname` | `acos` (pas de newline) | Accessible avant setrens |
+
+**Décision setrens :** Retiré `setrens(0,0)` pour permettre l'accès filesystem (file/read, file/write). La sécurité sera ré-adressée dans un futur workstream dédié.
+
+### Résultat final WS3
+
+```
+mcp-query system info      → {"hostname":"acos","kernel":"ACOS-0.5.12-x86_64",...}
+mcp-query process list     → [44 processus réels avec noms : init, mcpd, ion, ...]
+mcp-query memory stats     → {note: "unavailable on this kernel build"}
+mcp-query file read /etc/hostname → {"content":"acos","size":4}
+mcp-query config set k v   → {"ok":true}
+mcp-query config get k     → {"value":"v"}
+mcp-query log write info "msg" src → {"ok":true,"index":0}
+mcp-query mcp '{"jsonrpc":"2.0","method":"initialize","id":1}' → {capabilities, serverInfo: "acos-mcp"}
+```
+
+### Métriques finales WS3
+
+| Métrique | Valeur |
+|---|---|
+| Services actifs | 10 (echo, mcp, system, process, memory, file, file_write, file_search, log, config) |
+| Tests unitaires | 44 passing |
+| Benchmarks | Tous < 10μs (628ns – 8578ns) |
+| Binary mcpd | 876K |
+| Binary mcp-query | 545K |
+| Boot time | 4s |
+| Security findings fixed | 12/12 |
+| AutoResearch rounds | 1 (format discovery) |
+| Commits | 6 (impl → review fixes → boot fix → mcp-query → cfg fix → runtime fix) |
+
+### Outils créés durant WS3
+
+| Outil | Rôle |
+|---|---|
+| `mcp-query` | CLI pour interroger les services MCP depuis ion shell |
+| `mcp-diag` | Diagnostic tool (temporaire) pour dumper /scheme/sys/ |
+
+### Leçons apprises
+
+1. **`default = ["host-test"]` dans Cargo.toml** est dangereux : quand on ajoute `--features redox`, les deux features sont actives → conflits de symboles. Toujours utiliser `--no-default-features --features X` pour le cross-compile.
+2. **Le protocole init Redox a 3 types de services** : `notify` (byte readiness), `scheme` (capability fd), `nowait` (fire-and-forget). Utiliser le mauvais type → le scheme n'est jamais enregistré.
+3. **`setrens(0,0)`** coupe TOUT accès filesystem, pas seulement le réseau. Si un daemon doit lire des fichiers, soit on cache avant setrens, soit on ne l'utilise pas.
+4. **Les fichiers `/scheme/sys/`** n'ont pas tous le même format et certains n'existent pas sur ce build kernel. Toujours valider le format réel avant de coder un parser.
+5. **`cat` ne peut pas interroger un scheme Redox** car il ne fait pas write+read sur le même fd. Un outil dédié (mcp-query) est nécessaire.
