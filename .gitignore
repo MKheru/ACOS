@@ -1,0 +1,21 @@
+# Build artifacts
+**/target/
+**/*.o
+**/*.so
+**/*.dylib
+
+# Redox build outputs (huge)
+redox_base/build/
+redox_base/prefix/
+redox_base/repo/
+
+# Podman state
+redox_base/build/podman/
+
+# Editor
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store

@@ -1,26 +1,81 @@
-### **Titre de la Recherche (v2) :**
-**Conception d'un Système d'Exploitation Agent-Centric (ACOS) en Rust : Architecture Hybride pour les Workflows d'IA et les Applications de Productivité Essentielles.**
+# ACOS AutoResearch Program — Agent-Centric Operating System
 
-### **Postulat de départ (inchangé) :**
-Les systèmes d'exploitation contemporains (Windows, macOS, Linux) sont l'aboutissement d'une évolution de 50 ans centrée sur le paradigme de l'Interface Graphique Utilisateur (GUI), de la manipulation directe de fichiers et de la gestion de processus pour des applications généralistes. L'émergence des grands modèles de langage (LLM) et des agents IA travaillant principalement via des interfaces en ligne de commande (CLI) ou des API introduit une rupture. Ces OS actuels imposent une surcharge systémique (gestion de fenêtres, services graphiques, pilotes d'affichage complexes) qui devient superflue, voire contre-productive, pour un utilisateur dont l'interaction principale avec la machine est devenue conversationnelle et orientée "tâche".
+## Vision
+ACOS est un OS "AI-First" basé sur un fork de Redox OS (micro-noyau Rust), où toute communication entre l'IA, le matériel et l'humain passe par un bus sémantique MCP natif au noyau (`mcp:` scheme).
 
-### **Thèse Principale (mise à jour) :**
-Il est possible de concevoir une nouvelle architecture de système d'exploitation, initialement écrite en **Rust** pour ses garanties de sécurité et de performance. Cet OS, **ACOS (Agent-Centric Operating System)**, abandonnera l'héritage de la GUI comme paradigme central pour se concentrer sur l'efficacité des interactions avec des agents IA. Il intégrera cependant un **sous-système graphique isolé et optionnel** pour assurer la compatibilité avec un ensemble restreint d'applications humaines critiques, telles qu'un navigateur web et un environnement de développement.
+## Méthode : Boucle Hybride (Dev Classique + AutoResearch)
 
-### **Axes de Recherche et d'Exploration :**
+Ce projet utilise deux modes de travail complémentaires :
 
-1.  **Axe Vertical (Profondeur du Système) :**
-    *   **Noyau (Kernel) & Ordonnancement :** Repenser l'ordonnanceur de tâches (scheduler). Au lieu d'optimiser la réactivité d'une interface graphique, il doit prioriser des "bursts" de calcul (inférence de modèles), des accès mémoire massifs, et la gestion de très nombreux processus légers ou "threads" représentant des sous-tâches d'agents. Faut-il un ordonnanceur spécifique pour les tenseurs et les opérations neuronales ?
-    *   **Système de Fichiers & Gestion d'État :** Le concept de "fichier" est-il encore pertinent ? On pourrait explorer un système de gestion de l'information basé non plus sur une arborescence, mais sur un graphe d'objets ou une base de données vectorielle native. L'OS gérerait nativement les "contextes" de conversation, les prompts, les résultats, et leurs relations, plutôt que de simples "fichiers texte".
-    *   **Le Shell Réinventé :** Le shell ne serait plus une simple boucle REPL (Read-Eval-Print Loop) comme `bash` ou `zsh`. Il deviendrait une "Méta-Interface Agentique" : un superviseur d'agents capable de comprendre le langage naturel, de paralléliser des requêtes vers différents outils (Gemini, Claude...), d'agréger les résultats et de maintenir un état de la tâche globale.
+### Mode 1 : Développement Classique (APEX)
+Pour l'architecture globale, les décisions structurelles, et l'intégration des composants.
+- Piloté par l'humain avec l'agent comme assistant
+- Commits manuels après validation
 
-2.  **Axe Horizontal (Étendue du Système) :**
-    *   **Architecture Hybride et Sous-système Graphique :** C'est un point de recherche majeur. Comment exécuter des applications graphiques complexes (navigateur, IDE type VS Code) sans compromettre la philosophie minimaliste ?
-        *   **Hypothèse :** Implémenter un serveur d'affichage minimal (ex: un compositeur Wayland léger) fonctionnant dans un conteneur ou un "bac à sable" strict. Ce sous-système ne serait activé qu'à la demande explicite de l'utilisateur pour une application spécifique, laissant le cœur de l'OS libre de toute charge graphique le reste du temps.
-    *   **Co-conception Matériel-Logiciel :** En respectant le matériel actuel, comment l'OS pourrait-il mieux l'exploiter ? (ex: accès plus direct au GPU/NPU en contournant des couches de pilotes graphiques).
-        *   **Propositions d'évolution :** Quel serait le PC idéal pour ACOS ? Intégration d'une "RAM contextuelle" (mémoire ultra-rapide dédiée au contexte des LLMs) ? Un CPU avec des cœurs spécialisés dans l'orchestration de tâches asynchrones ? Une architecture où le GPU n'est plus sur un bus PCIe mais est un co-processeur plus intégré ?
-    *   **Sécurité et Sandboxing :** Si l'OS exécute en permanence des agents qui peuvent accéder à des données ou exécuter du code, le modèle de sécurité doit être repensé. Il faudrait un système de "capacités" et de sandboxing extrêmement granulaire et natif, où chaque agent se voit allouer des permissions explicites (accès réseau, lecture de "contextes" spécifiques, etc.).
+### Mode 2 : Boucle AutoResearch (Itération Autonome)
+Pour optimiser des composants isolés avec une métrique mesurable.
+- L'agent modifie le fichier cible (ex: `components/mcp_scheme/src/lib.rs`)
+- Le harnais d'évaluation (`harness/evaluate.py`) compile, teste dans QEMU, mesure
+- Décision automatique : garder / rollback
+- Mémoire cumulative dans `evolution/memory/`
 
-3.  **Écosystème Développeur et Trajectoire du Langage :**
-    *   **Phase 1 (Implémentation) :** Le développement du noyau ACOS et de ses composants principaux se fera **exclusivement en Rust**. L'objectif est de maximiser la sûreté de la mémoire et la performance "bare-metal", tout en bénéficiant d'un écosystème moderne. Les API système seront exposées avec des "bindings" Rust natifs.
-    *   **Phase 2 (Recherche Prospective) :** Une fois ACOS fonctionnel, un axe de recherche secondaire sera initié. Il consistera à **utiliser l'IA pour spécifier et prototyper un nouveau langage de programmation**. Ce langage serait sémantiquement plus proche du fonctionnement des modèles de raisonnement de l'IA, visant à rendre l'écriture d'agents complexes plus intuitive, plus sûre et plus performante que les approches actuelles.
+## Structure du Projet
+
+```
+projects/agent_centric_os/
+├── program.md                  ← CE FICHIER (instructions agent)
+├── architecture/               ← Documents d'architecture
+│   └── ACOS_ARCHITECTURE.md    ← Architecture v4 (référence)
+├── components/                 ← Composants développés pour ACOS
+│   └── mcp_scheme/             ← Premier composant : le scheme MCP
+│       ├── src/                ← Code Rust (modifiable par l'agent en mode AutoResearch)
+│       ├── tests/              ← Tests unitaires et d'intégration
+│       └── Cargo.toml
+├── redox_base/                 ← Fork de Redox OS (base, modif prudentes)
+├── evolution/                  ← Système d'auto-évolution
+│   ├── loops/                  ← Scripts de boucle d'itération
+│   ├── memory/                 ← Mémoire cumulative (à la MiniMax)
+│   └── results/                ← Historique TSV des itérations
+├── harness/                    ← Harnais d'évaluation
+│   ├── evaluate.py             ← Script d'éval (compile + QEMU + score)
+│   └── qemu_runner.sh          ← Lanceur QEMU headless
+├── scripts/                    ← Utilitaires
+│   └── build_in_podman.sh      ← Build via Podman
+└── MEMORY.md                   ← Journal d'évolution (legacy, migré vers evolution/memory/)
+```
+
+## Composant Actuel : MCP Scheme (`mcp:`)
+
+### Objectif
+Implémenter un scheme handler Redox natif qui permet aux processus d'ouvrir des ressources via `mcp://service/resource`. C'est le composant fondamental d'ACOS.
+
+### Métriques d'évaluation (pour la boucle AutoResearch)
+1. **Compilation** : Le composant compile sans erreur → binaire (pass/fail)
+2. **Tests unitaires** : Tous les tests passent (pass/fail)
+3. **Latence IPC** : Temps de round-trip d'un message MCP en microsecondes (lower is better)
+4. **Throughput** : Messages MCP par seconde (higher is better)
+5. **Score composite** : `score = (1000 / latency_us) * throughput * test_pass_rate`
+
+### Contraintes
+- Tout le code du composant est en Rust
+- Doit s'intégrer dans le système de schemes de Redox
+- Doit supporter le format JSON-RPC du protocole MCP standard
+- Les tests doivent pouvoir tourner hors-QEMU (unit tests) ET dans QEMU (integration)
+
+## Workflow Agent
+
+### Phase 1 : Fondation (actuelle)
+1. Examiner le système de schemes de Redox OS (`redox_base/`)
+2. Créer le squelette du scheme `mcp:` dans `components/mcp_scheme/`
+3. Écrire le harnais d'évaluation (`harness/evaluate.py`)
+4. Faire compiler le premier build minimal dans Podman
+5. Booter dans QEMU headless et valider le boot
+
+### Phase 2 : Boucle AutoResearch sur le MCP Scheme
+- L'agent itère sur `components/mcp_scheme/src/lib.rs`
+- Chaque itération : modifier → compiler → tester → mesurer → décider
+- Mémoire cumulative dans `evolution/memory/round_N.md`
+
+### Phase 3 : Intégration et Meta-boucle
+- Intégrer le scheme dans Redox
+- L'agent optimise aussi ses propres instructions (ce fichier)
