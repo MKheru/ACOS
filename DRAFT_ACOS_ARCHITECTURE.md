@@ -1,49 +1,45 @@
 # Architecture ACOS (Agent-Centric OS)
 
-*Statut : Version 3.0 - Le "Cheat Code" Linux/Rust & Le Bus MCP.*
+*Statut : Version 4.0 - La Fondation Redox OS & Le Protocole `mcp:`*
 
 ## 1. Vision Globale
-ACOS est le premier système d'exploitation où le **Model Context Protocol (MCP)** n'est pas un outil utilisateur, mais le **bus système natif (IPC)**. L'IA est le citoyen de première classe. L'humain interagit via un sous-système web/WASM, qui est entièrement pilotable par l'IA.
+ACOS est un système d'exploitation "AI-First" pur, éliminant la dette technique des noyaux monolithiques des années 90 (Linux/Windows). Il utilise un micro-noyau entièrement écrit en Rust, où la communication entre l'Intelligence Artificielle, le matériel et l'interface humaine se fait via un réseau sémantique (MCP) plutôt que par des fichiers POSIX traditionnels.
 
-## 2. Le Noyau : Le pragmatisme "Rust-for-Linux" (RFL)
+## 2. Le Noyau : Fork de Redox OS
 
-Coder un Exokernel de zéro pour un PC moderne est une impasse (le "mur des pilotes"). ACOS utilise une approche hybride radicale :
+Plutôt que d'éviscérer Linux (ce qui reste un compromis lourd) ou de créer un noyau de zéro (trop long), ACOS est basé sur un fork du projet **Redox OS**.
 
-### 2.1. La Fondation Linux "Éviscérée"
-ACOS boot sur un noyau Linux standard, mais extrêmement minimaliste (custom kernel build). Son seul but est d'apporter le support matériel gratuit (pilotes GPU propriétaires, USB, PCIe, gestion d'énergie). L'espace utilisateur GNU/Linux classique (systemd, bash, X11) est totalement supprimé.
+### 2.1. Les Avantages du Micro-noyau Redox
+- **Sécurité et Isolation :** Seulement ~30 000 lignes de code s'exécutent avec des privilèges élevés. Les pilotes (drivers), le réseau et le système de fichiers tournent dans l'espace utilisateur. Si un composant plante, il redémarre sans faire crasher l'OS.
+- **Mémoire Sûre :** Construit à 100% en Rust, éliminant par conception les failles de corruption mémoire.
+- **La solution aux pilotes (Driver Sandbox) :** Pour le matériel très complexe (ex: GPU NVIDIA), ACOS utilise l'approche Redox d'isoler un mini-noyau Linux dans une machine virtuelle légère stricte (driver-domain) uniquement chargée d'exposer l'interface PCIe, sans polluer le reste du système.
 
-### 2.2. L'Hyper-Module Rust ACOS
-Toute l'intelligence "Agent-Centric" est implémentée sous forme de **modules noyau écrits en Rust** (via l'infrastructure *Rust-for-Linux*). 
-- Ce module Rust prend le contrôle de l'ordonnanceur Linux (via eBPF ou des hooks profonds).
-- Il garantit l'interruption de sécurité humaine (NMI) : il surveille les interruptions des périphériques d'entrée pour suspendre les calculs GPU de l'Agent.
+## 3. L'IPC Sémantique : Le mariage des "Schemes" et du MCP
 
-## 3. Le Bus Système : MCP (Model Context Protocol) au niveau OS
+L'innovation centrale de Redox est son système IPC basé sur des URI (Uniform Resource Identifiers), appelés "Schemes". Par exemple, on accède au réseau via `tcp:` et à l'écran via `display:`.
 
-Sur Linux, les processus se parlent via des pipes, des sockets ou D-Bus. Sur ACOS, **les processus se parlent en MCP**.
+### 3.1. Le schéma `mcp:` natif
+ACOS étend ce paradigme en créant le schéma système `mcp:`.
+- **Avant (Linux) :** L'agent IA devait lancer un processus bash, exécuter `cat /etc/config`, lire stdout.
+- **Avec ACOS/Redox :** L'agent IA ouvre simplement le flux `mcp://system/config` au niveau du noyau. 
 
-### 3.1. Tout est un Serveur MCP
-- Le système de fichiers n'est pas monté classiquement, il est exposé par le noyau comme un "Serveur MCP Fichier".
-- Le GPU est exposé comme un "Serveur MCP Calcul".
-- Le Navigateur Web/IDE (tournant dans l'espace humain) expose son état interne (DOM, onglets ouverts) via un "Serveur MCP UI".
+### 3.2. Tout le système est un graphe de connaissances
+- L'interface utilisateur Web (WASM/Servo) s'enregistre auprès du noyau en tant que `mcp://ui/browser/tab/1`.
+- Le gestionnaire de processus s'enregistre comme `mcp://system/processes`.
+- Le Superviseur IA (qui tourne comme un service système principal) peut interroger, surveiller et modifier n'importe quel composant de l'ordinateur en utilisant le standard Model Context Protocol, car le noyau gère le routage MCP de manière matérielle.
 
-### 3.2. Le Superviseur IA (Le Cerveau)
-L'Agent IA principal tourne comme le processus init (PID 1) de l'ACOS.
-Puisque le Navigateur expose ses contrôles via MCP, l'Agent IA peut nativement et instantanément :
-- "Lis l'onglet 2 du navigateur."
-- "Clique sur ce bouton dans le DOM."
-- "Ouvre VS Code et tape ce code."
-L'Agent contrôle l'interface humaine comme une simple API, sans avoir besoin de simuler des clics de souris hasardeux.
+## 4. Les Couches Supérieures (L'Espace Utilisateur)
 
-## 4. L'Interface Humaine : Le Bac à Sable WebApps/WASM
+L'architecture des processus est divisée en deux mondes, gérés par l'ordonnanceur de Redox :
 
-L'humain n'a pas accès au système de fichiers sous-jacent. Son environnement visuel est un "Thin Client" (Client Léger) :
+### 4.1. Le Domaine Cognitif (The AI Supervisor)
+- **Rôle :** C'est le cerveau de la machine. Un ou plusieurs modèles d'IA (ex: Llama 3 local, ou une connexion API distante) tournent en tâche de fond constante.
+- **Capacités :** Il écoute les requêtes sur le bus `mcp:`. Il peut lire les logs du système, modifier des fichiers, générer du code. Il possède la capacité d'interagir avec les processus matériels (GPU) via des permissions strictes.
 
-- **Le Compositeur :** Un compositeur Wayland ultra-basique écrit en Rust, géré par le module noyau ACOS.
-- **L'Exécuteur :** Une WebView/WASM engine (type Tauri/Servo) en plein écran.
-- **L'Expérience :** L'utilisateur utilise des WebApps (VS Code Web, Navigateurs). Lorsqu'il a besoin d'une action, il demande à l'Agent IA. L'Agent utilise le bus MCP pour "piloter" la WebApp devant les yeux de l'utilisateur, ou travaille en tâche de fond.
+### 4.2. Le Domaine Humain (Le client léger WASM/Servo)
+- **Rôle :** Fournir l'interface visuelle à l'utilisateur (Navigateur, IDE, Terminal).
+- **Technologie :** ACOS intègre nativement **Servo** (le moteur de rendu web écrit en Rust). L'utilisateur n'exécute pas de binaires natifs classiques. Toutes les applications (comme un clone de VS Code) sont des WebApps s'exécutant dans le bac à sable de Servo.
+- **L'Intégration IA :** Ce moteur Servo expose son arbre DOM via le schéma `mcp:`. L'utilisateur peut dire à voix haute : *"Ferme tous les onglets qui parlent de Python"*, le Superviseur IA comprend la requête, envoie une commande via `mcp://ui/servo/tabs`, et le navigateur s'exécute.
 
-## 5. Nouveau Chronogramme de Développement (Réaliste)
-Grâce à l'utilisation de la base Linux et de Rust-for-Linux :
-- **Mois 1 :** Création du noyau Linux minimal et implémentation du "Bus MCP" en espace noyau via Rust.
-- **Mois 2 :** Intégration du superviseur IA (PID 1) et de la communication avec le bus MCP noyau.
-- **Mois 3 :** Lancement du compositeur Wayland minimal et de la WebView pour afficher l'interface humaine. Validation du contrôle de la WebView par l'Agent via MCP.
+## 5. Résumé de l'Expérience Utilisateur
+Sur un PC équipé d'ACOS, l'humain n'a plus besoin d'organiser ses fichiers dans des dossiers ou de scripter des tâches. L'ordinateur est un agent. L'humain utilise le navigateur (Servo) pour consommer du contenu, et le Superviseur IA (intégré au micro-noyau Redox via le bus `mcp:`) gère la complexité informatique sous-jacente en temps réel.
