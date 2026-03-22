@@ -198,3 +198,61 @@ cd /path/to/agent_centric_os
 
 ### Itérations suivantes (cycle AutoResearch) :
 Modifier le code → `inject_mcpd.sh` → cross-compile (10s) → inject (3s) → test (4s) = **~20 secondes par itération**
+
+---
+
+## WS2 : MCP Bus — Native Scheme Registration (2026-03-22)
+
+### Objectif
+Transformer mcpd d'un daemon stdin/stdout en un vrai scheme Redox natif (`mcp:`).
+
+### Pattern utilisé : randd (SchemeSync + SchemeDaemon)
+- `ipcd` utilise `SchemeBlock` + `EventQueue` (complexe, async)
+- `randd` utilise `SchemeSync` + `SchemeDaemon` (simple, blocking) ← **choisi**
+- Boucle principale : `next_request` → `handle_sync` → `write_response`
+
+### Erreurs cross-compilation rencontrées
+
+**1. Crate `daemon` — chemin relatif incorrect**
+```
+error: Unable to update /mnt/redox/recipes/other/redox_base/recipes/core/base/source/daemon
+```
+- `inject_mcpd.sh` copie `components/mcpd/` → `recipes/other/mcpd/source/`
+- Le chemin `../../redox_base/...` est relatif à `components/mcpd/`, pas à la destination
+- **Fix :** `path = "../../../core/base/source/daemon"` (relatif depuis `recipes/other/mcpd/source/`)
+
+**2. Crate `redox_syscall` — double import**
+```
+error: crate depends on `redox_syscall v0.7.3` multiple times with different names
+```
+- `redox_syscall` était à la fois en `[dependencies]` (optional) ET `[target.'cfg(target_os = "redox")'.dependencies]`
+- **Fix :** Retirer la section `[target...]` — le feature `redox` gate tout via optional deps
+
+**3. Crate `redox_syscall` — nom d'import**
+- Le crate `redox_syscall` a `[lib] name = "syscall"` → accessible comme `use syscall::` en Rust
+- Mais le dep key dans Cargo.toml doit correspondre : `syscall = { package = "redox_syscall", version = "0.7" }`
+- Sinon Cargo crée un extern name `redox_syscall` qui ne match pas `use syscall::`
+
+**4. `Error::new()` — signature i32 en v0.7**
+```
+error[E0308]: mismatched types — expected `i32`, found `usize`
+```
+- En v0.5, `Error::new()` prenait `usize`. En v0.7, c'est `i32`.
+- **Fix :** `let errno = if e < 0 { -e } else { e };` (garder i32)
+
+**5. `SchemeSync` trait — import manquant dans mcpd**
+```
+error[E0599]: no method named `on_close` found for struct `McpSchemeBridge`
+```
+- `call.handle_sync()` marche car il fait partie de l'API `Call`, pas du trait
+- Mais `bridge.on_close(id)` est une méthode du trait `SchemeSync` → il faut `use redox_scheme::scheme::SchemeSync`
+
+### qemu_runner.sh — faux positif kernel panic
+Le script détecte "panic" dans la sortie série. `smolnetd` (réseau) panic avec "No network adapter" → le script conclut "KERNEL PANIC" alors que ACOS boot correctement (`ACOS_BOOT_OK` présent).
+
+### Résultat final
+- Cross-compile : **15.5s** (vs 10s en WS1, dû aux nouvelles deps redox_scheme+daemon+syscall)
+- Binary : **792K** static ELF (vs 727K en WS1)
+- 24 tests passent (vs 9 en WS1)
+- MCP conformité : 100% (9/9 méthodes)
+- Echo roundtrip latency : 436ns (host bench)
