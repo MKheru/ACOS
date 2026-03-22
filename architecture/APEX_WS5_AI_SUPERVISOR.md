@@ -7,9 +7,9 @@
 Implement WS5 (AI Supervisor) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
 
 ## Context
-ACOS is an AI-native OS based on Redox OS (Rust micro-kernel). WS1, WS2, and WS3 are COMPLETE:
+ACOS is an AI-native OS based on a Rust micro-kernel. WS1, WS2, and WS3 are COMPLETE:
 - WS1: OS boots with full ACOS branding in 4s via QEMU
-- WS2: `mcp:` scheme is a REAL, NATIVE Redox scheme. 100% MCP spec. Latency 436ns.
+- WS2: `mcp:` scheme is a REAL, NATIVE ACOS kernel scheme. 100% MCP spec. Latency 436ns.
 - WS3: 10 MCP services active (system, process, memory, file, file_write, file_search, log, config, echo, mcp). 44 tests. All < 10μs. `mcp-query` CLI tool works.
 
 Current state:
@@ -77,7 +77,7 @@ This is NOT an LLM — it's a structured command interpreter. But it proves the 
 
 ### Phase 2: LLM Integration (AutoResearch)
 Once the rule engine works, iterate to add real LLM inference:
-- Option A: Cross-compile a tiny LLM (SmolLM 135M / Phi-3 Mini) for Redox (WS4)
+- Option A: Cross-compile a tiny LLM (SmolLM 135M / Phi-3 Mini) for ACOS (WS4)
 - Option B: QEMU virtio-serial bridge to host LLM (bypass network)
 - Option C: Embed a small transformer in Rust (no_std compatible)
 
@@ -99,7 +99,7 @@ AutoResearch loop: try each option, measure tokens/sec, pick the best.
 
 ### Phase C: LLM Integration (AutoResearch — requires lab iterations)
 5.9 LLM backend abstraction — trait for text generation (rule engine vs LLM)
-5.10 Evaluate LLM options for Redox (cross-compile feasibility)
+5.10 Evaluate LLM options for ACOS (cross-compile feasibility)
 5.11 Integrate best LLM option, benchmark tokens/sec
 5.12 Prompt engineering — system prompt for ACOS tool calling
 
@@ -239,7 +239,7 @@ FOR iteration IN 1..15:
 |-------|-------|------|------|
 | impl-ai-core | sonnet | Implement acosd binary + command parser (Phase A: 5.1-5.5) | Dev |
 | impl-ai-reasoning | sonnet | Implement chain planner + context memory (Phase B: 5.6-5.8) | Dev |
-| research-llm | opus | Evaluate LLM options for Redox, AutoResearch loop (Phase C: 5.9-5.12) | AutoResearch |
+| research-llm | opus | Evaluate LLM options for ACOS, AutoResearch loop (Phase C: 5.9-5.12) | AutoResearch |
 | impl-ai-security | sonnet | Permission model + audit log (Phase D: 5.13-5.14) | Dev |
 
 ### Dependencies
@@ -315,6 +315,6 @@ mcp:mcp      → methods: initialize, tools/list, tools/call, resources/list, re
 
 **WS5 Phase A peut se faire SANS WS4.** Le rule engine ne nécessite aucun LLM. C'est un pattern matcher + MCP caller. Quand il marchera, on aura l'architecture complète : user → AI → MCP tool calls → response.
 
-**WS4 (LLM Runtime) sera nécessaire pour WS5 Phase C.** Mais c'est un chantier très dur (cross-compile d'un moteur d'inférence pour Redox). On peut le déférer.
+**WS4 (LLM Runtime) sera nécessaire pour WS5 Phase C.** Mais c'est un chantier très dur (cross-compile d'un moteur d'inférence pour ACOS). On peut le déférer.
 
 **Recommandation :** Faire WS5 Phase A+B d'abord (rule engine + chain planner), puis WS4 quand on voudra passer au vrai LLM.
