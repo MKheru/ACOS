@@ -19,3 +19,4 @@ redox_base/build/podman/
 
 # OS
 .DS_Store
+.env
