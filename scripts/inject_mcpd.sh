@@ -36,6 +36,11 @@ mkdir -p "$SOURCE_DIR/llm_engine"
 cp -r "$PROJECT_DIR/components/llm_engine/src" "$SOURCE_DIR/llm_engine/src"
 cp "$PROJECT_DIR/components/llm_engine/Cargo.toml" "$SOURCE_DIR/llm_engine/Cargo.toml"
 
+# Copy mcp_talk crate (AI terminal interface)
+mkdir -p "$SOURCE_DIR/mcp_talk"
+cp -r "$PROJECT_DIR/components/mcp_talk/src" "$SOURCE_DIR/mcp_talk/src"
+cp "$PROJECT_DIR/components/mcp_talk/Cargo.toml" "$SOURCE_DIR/mcp_talk/Cargo.toml"
+
 # Fix the path dependency in mcpd's Cargo.toml to point to local mcp_scheme
 sed -i 's|path = "../mcp_scheme"|path = "mcp_scheme"|' "$SOURCE_DIR/Cargo.toml"
 
@@ -65,6 +70,19 @@ fi
 
 # Update rev in recipe (keep the rest intact)
 sed -i "s/^rev = .*/rev = \"$REV\"/" "$RECIPE_DIR/recipe.toml"
+
+# Update recipe.toml build script to include mcp-talk build and binary copy
+# Insert mcp-talk build and copy before the closing """ (only if not already present)
+if ! grep -q "mcp-talk" "$RECIPE_DIR/recipe.toml"; then
+    sed -i '/^"""/i\
+\
+"${COOKBOOK_CARGO}" build \\\
+    --manifest-path "${COOKBOOK_SOURCE}/Cargo.toml" \\\
+    --package mcp-talk \\\
+    ${build_flags}\
+\
+cp "target/${TARGET}/${build_type}/mcp-talk" "${COOKBOOK_STAGE}/usr/bin/mcp-talk"' "$RECIPE_DIR/recipe.toml"
+fi
 
 echo "Git rev: $REV"
 echo "Recipe rev updated in: $RECIPE_DIR/recipe.toml"
