@@ -142,20 +142,19 @@ def handle_jsonrpc(request_str: str, model: str) -> str:
 
 
 def run_socket_server(socket_path: str, model: str):
-    """Listen on Unix socket for QEMU virtio-serial connections."""
-    # Remove old socket
-    if os.path.exists(socket_path):
-        os.unlink(socket_path)
-
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(socket_path)
-    srv.listen(1)
-    print(f"LLM Proxy listening on {socket_path} (model: {model})")
-    print(f"Start QEMU with: -chardev socket,id=llm,path={socket_path},server=off -device virtio-serial -device virtserialport,chardev=llm,name=llm")
+    """Listen on TCP for ACOS connections (and Unix socket for local testing)."""
+    # TCP server on port 9999 (accessible from QEMU via 10.0.2.2:9999)
+    tcp_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcp_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    tcp_srv.bind(("0.0.0.0", 9999))
+    tcp_srv.listen(5)
+    print(f"LLM Proxy listening on TCP :9999 (model: {model})")
+    print(f"From ACOS: mcp-query llm generate 'your prompt'")
+    print(f"ACOS connects to tcp:10.0.2.2:9999")
 
     while True:
-        conn, _ = srv.accept()
-        print(f"[{time.strftime('%H:%M:%S')}] Client connected")
+        conn, addr = tcp_srv.accept()
+        print(f"[{time.strftime('%H:%M:%S')}] Client connected from {addr}")
         threading.Thread(target=handle_client, args=(conn, model), daemon=True).start()
 
 
