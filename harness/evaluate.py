@@ -37,6 +37,13 @@ COMPONENT_DIR = PROJECT_ROOT / "components" / "mcp_scheme"
 REDOX_DIR = PROJECT_ROOT / "redox_base"
 RESULTS_DIR = PROJECT_ROOT / "evolution" / "results"
 
+HARNESS_DIR = Path(__file__).parent
+
+# Default commands — overridden when --lab config specifies host_test commands
+_COMPILE_CMD = ["cargo", "build", "--features", "host-test"]
+_TEST_CMD = ["cargo", "test", "--features", "host-test"]
+
+
 def run_cmd(cmd, cwd=None, timeout=300):
     """Run a command and return (success, stdout, stderr, duration)."""
     t0 = time.time()
@@ -51,10 +58,10 @@ def run_cmd(cmd, cwd=None, timeout=300):
 
 
 def evaluate_compile():
-    """Compile the MCP scheme component. Returns (success, duration_s)."""
+    """Compile the component. Returns (success, duration_s)."""
     print("=== COMPILE ===")
     success, stdout, stderr, dt = run_cmd(
-        ["cargo", "build", "--features", "host-test"],
+        _COMPILE_CMD,
         cwd=COMPONENT_DIR
     )
     if not success:
@@ -69,7 +76,7 @@ def evaluate_tests():
     """Run unit tests. Returns (success, pass_count, fail_count, duration_s)."""
     print("=== TESTS ===")
     success, stdout, stderr, dt = run_cmd(
-        ["cargo", "test", "--features", "host-test"],
+        _TEST_CMD,
         cwd=COMPONENT_DIR
     )
 
@@ -182,11 +189,53 @@ def save_result(score, details):
                 f"{details.get('compile_time', 0):.1f}\t{details.get('notes', '')}\n")
 
 
+def load_lab_config(lab_id):
+    """Load lab config via parse_lab.load_lab(). Returns config dict."""
+    sys.path.insert(0, str(HARNESS_DIR))
+    try:
+        from parse_lab import load_lab
+        cfg = load_lab(lab_id)
+        if cfg is None:
+            print(f"Failed to load lab config for '{lab_id}'")
+            sys.exit(1)
+        return cfg
+    except Exception as e:
+        print(f"Failed to load lab config for '{lab_id}': {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="ACOS AutoResearch Evaluation Harness")
     parser.add_argument("--full", action="store_true", help="Include QEMU integration test")
     parser.add_argument("--bench", action="store_true", help="Include benchmarks")
+    parser.add_argument("--lab", metavar="LAB_ID", help="Use lab config for paths and commands")
+    parser.add_argument("--round", type=int, default=1, help="Round number (used with --lab)")
     args = parser.parse_args()
+
+    # --lab + --full: delegate entirely to autoresearch.sh
+    if args.lab and args.full:
+        result = subprocess.run(
+            ["bash", str(HARNESS_DIR / "autoresearch.sh"), args.lab, str(args.round)]
+        )
+        sys.exit(result.returncode)
+
+    # When --lab provided, override paths and commands from config
+    global COMPONENT_DIR, _COMPILE_CMD, _TEST_CMD
+
+    if args.lab:
+        cfg = load_lab_config(args.lab)
+        component = cfg.get("component", "mcp_scheme")
+        source_dir = cfg.get("source_dir")
+        if source_dir:
+            COMPONENT_DIR = Path(source_dir)
+        else:
+            COMPONENT_DIR = PROJECT_ROOT / "components" / component
+
+        host_test = cfg.get("host_test", {})
+        if host_test.get("compile"):
+            _COMPILE_CMD = host_test["compile"]
+        if host_test.get("test"):
+            _TEST_CMD = host_test["test"]
 
     details = {}
 
@@ -213,11 +262,23 @@ def main():
     if args.bench:
         latency_us, _ = evaluate_bench()
 
-    # Step 4: QEMU integration (optional, placeholder)
+    # Step 4: QEMU integration (optional)
     if args.full:
         print("=== QEMU ===")
-        print("QEMU integration test not yet implemented")
-        details["notes"] = details.get("notes", "") + " qemu_skipped"
+        if args.lab:
+            qemu_result = subprocess.run(
+                ["bash", str(HARNESS_DIR / "qemu_inject.sh"), args.lab, str(args.round)],
+                capture_output=True, text=True
+            )
+            if qemu_result.returncode != 0:
+                print(f"QEMU injection failed: {qemu_result.stderr.strip()}")
+                details["notes"] = details.get("notes", "") + " qemu_failed"
+            else:
+                print("QEMU injection OK")
+                details["notes"] = details.get("notes", "") + " qemu_ok"
+        else:
+            print("QEMU integration test not yet implemented")
+            details["notes"] = details.get("notes", "") + " qemu_skipped"
 
     # Compute and report score
     score = compute_score(
