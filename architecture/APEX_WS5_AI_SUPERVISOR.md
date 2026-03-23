@@ -6,315 +6,272 @@
 
 Implement WS5 (AI Supervisor) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
 
-## Context
-ACOS is an AI-native OS based on a Rust micro-kernel. WS1, WS2, and WS3 are COMPLETE:
-- WS1: OS boots with full ACOS branding in 4s via QEMU
-- WS2: `mcp:` scheme is a REAL, NATIVE ACOS kernel scheme. 100% MCP spec. Latency 436ns.
-- WS3: 10 MCP services active (system, process, memory, file, file_write, file_search, log, config, echo, mcp). 44 tests. All < 10μs. `mcp-query` CLI tool works.
+## IMPORTANT: Naming Convention
+**This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations. The micro-kernel is an internal implementation detail. The project, the OS, the brand = **ACOS**.
 
-Current state:
-- mcpd daemon at components/mcpd/ — serves all MCP services via mcp: scheme
-- mcp_scheme library at components/mcp_scheme/ — 10 handlers, Router, ServiceHandler trait
-- mcp-query CLI at components/mcp_query/ — open+write+read on scheme fd
-- No network stack (smolnetd crashes, no NIC in QEMU)
-- No local LLM runtime yet (WS4 not started)
-- Build workflow: inject_mcpd.sh → Podman cross-compile (15s) → redoxfs inject → QEMU boot (4s)
+## Context — What's Already Built (WS1-WS4 COMPLETE)
+
+- **WS1:** ACOS boots with full branding via QEMU (~14s)
+- **WS2:** `mcp:` scheme is a native kernel scheme, 436ns latency
+- **WS3:** 10 MCP services active (system, process, memory, file, file_write, file_search, log, config, echo, mcp). 44 tests. `mcp-query` CLI works.
+- **WS4:** LLM Runtime — **COMPLETE with two backends:**
+  - **Local inference:** SmolLM-135M (from-scratch Rust engine, 2.3 tok/s CPU) — functional but low quality, useful for offline mode
+  - **API proxy (PRIMARY):** Gemini 2.5 Flash via TCP proxy at **40 tok/s** — intelligent, coherent responses
+
+### Current Architecture (WS4)
+```
+┌───────────────────────────────────────────────────┐
+│  ACOS (QEMU, 2GB RAM, E1000 NIC)                  │
+│                                                     │
+│  ┌──────────┐    ┌──────────┐                      │
+│  │ mcp-query│───→│   mcpd   │                      │
+│  │ (client) │    │  mcp:llm │──→ LlmHandler        │
+│  └──────────┘    └──────────┘     │                 │
+│                                    │ TCP via ACOS    │
+│                                    │ tcp: scheme     │
+│                                    ▼                 │
+│                          tcp:10.0.2.2:9999           │
+└──────────────────────────┼───────────────────────────┘
+                           │ QEMU user-mode networking
+┌──────────────────────────┼───────────────────────────┐
+│  Host Linux               ▼                           │
+│                    llm-proxy.py                       │
+│                    (TCP :9999)                        │
+│                         │                             │
+│                         ▼                             │
+│                    Gemini 2.5 Flash API               │
+│                    (x-goog-api-key header)            │
+└───────────────────────────────────────────────────────┘
+```
+
+### What Already Works (verified in QEMU)
+```bash
+# From ion shell inside ACOS:
+mcp-query llm info
+# → {"model_name":"gemini-2.5-flash","quantization":"API","backend":"host-proxy"}
+
+mcp-query llm generate Hello I am ACOS
+# → {"text":"ACOS is an Agent-Centric Operating System, built with a Rust-based
+#    micro-kernel architecture...","tokens_per_sec":40.3}
+
+mcp-query system info     # → kernel info
+mcp-query process list    # → running processes
+mcp-query file read /etc/hostname  # → "acos"
+mcp-query config set key value     # → OK
+mcp-query log write info "message" shell  # → logged
+```
+
+### Build & Run Workflow
+```bash
+# 1. Start LLM proxy on host
+cd projects/agent_centric_os
+python3 scripts/llm-proxy.py  # Listens TCP :9999, calls Gemini API
+
+# 2. Build and boot ACOS
+cd redox_base
+make qemu CONFIG_NAME=acos-bare gpu=no kvm=yes
+
+# 3. Cross-compile cycle (when code changes)
+bash scripts/inject_mcpd.sh   # Sync sources to recipe
+podman run ... cargo build --release --target x86_64-unknown-redox --no-default-features --features redox
+# Mount image, inject binary, unmount, reboot QEMU
+```
+
+### Key Files
+```
+components/mcpd/               — MCP daemon (registers mcp: scheme)
+components/mcp_scheme/         — ServiceHandler trait, Router, all handlers
+  src/llm_handler.rs           — LlmHandler: TCP proxy to Gemini API
+  src/handler.rs               — ServiceHandler trait definition
+  src/protocol.rs              — JsonRpcRequest/Response
+  src/system_handlers.rs       — SystemInfo, Process, Memory handlers
+  src/file_handlers.rs         — FileRead, FileWrite, FileSearch handlers
+  src/support_handlers.rs      — Log, Config handlers
+components/mcp_query/          — CLI tool to query MCP services
+components/llm_engine/         — Local LLM inference engine (backup, offline mode)
+scripts/llm-proxy.py           — Host-side proxy (TCP → Gemini API)
+scripts/inject_mcpd.sh         — Source sync + recipe update
+redox_base/config/acos-bare.toml — ACOS image config (network + MCP init)
+```
+
+### Network Configuration (required for LLM proxy)
+```
+Init order: 00_drivers → 10_net (smolnetd + dhcpd) → 15_mcp (mcpd) → 99_acos_ready
+QEMU: user-mode networking with E1000 NIC (default)
+Host accessible from ACOS at: 10.0.2.2
+LLM proxy port: 9999
+```
 
 ## WS5 Objective
-Create `acosd` — an AI supervisor daemon that listens on the MCP bus, understands natural language, generates tool calls, and orchestrates system services.
+
+Create an **AI Supervisor** that can **interact with ACOS MCP services** — the AI reads system state, executes commands, chains multiple actions, and responds in natural language.
+
+**The LLM is already integrated (WS4).** WS5 focuses on **tool calling** — making the AI actually DO things in ACOS.
 
 **After WS5, this must work from inside ACOS:**
-```
-# From ion shell inside ACOS:
+```bash
 mcp-query ai ask "what processes are running?"
-# → The AI reads mcp://process/list, formats the answer in natural language
+# → AI calls mcp://process/list, formats the answer naturally
 
 mcp-query ai ask "read the hostname file"
-# → The AI calls mcp://file/read with path=/etc/hostname, returns the content
+# → AI calls mcp://file/read {path: "/etc/hostname"}, returns content
 
 mcp-query ai ask "set config theme to dark and log that I changed it"
-# → The AI chains: mcp://config/set + mcp://log/write, confirms both actions
+# → AI chains: mcp://config/set + mcp://log/write, confirms both
 
-mcp-query ai ask "what kernel version is this?"
-# → The AI calls mcp://system/info, extracts kernel field, responds naturally
+mcp-query ai ask "what's the system status?"
+# → AI calls system/info + process/list + memory/stats, synthesizes
+
+mcp-query ai ask "create a file /tmp/hello.txt with content 'Hello ACOS'"
+# → AI calls mcp://file_write/write {path, content}, confirms
 ```
 
-## Architecture Decision: LLM Backend
+## Architecture
 
-Since ACOS has no network stack and WS4 (local LLM) is not yet implemented, the AI supervisor uses a **host-bridge architecture**:
+### Approach: LLM with Function Calling
 
+Since we already have Gemini 2.5 Flash (which supports function calling natively), the AI supervisor uses **LLM function calling** — NOT a rule engine.
+
+The flow:
 ```
-┌─────────────────────────────────────────────┐
-│  QEMU (ACOS)                                 │
-│                                               │
-│  ┌──────────┐    ┌──────────┐                │
-│  │ mcp-query│───→│  acosd   │                │
-│  │ (client) │    │ (daemon) │                │
-│  └──────────┘    └────┬─────┘                │
-│                       │ mcp:ai scheme        │
-│                       │                       │
-│  ┌───────────────────┐│                       │
-│  │  mcpd (mcp: bus)  ││ tool calls            │
-│  │  ├─ system        ││ via mcp:              │
-│  │  ├─ process       │◄────────────────┐     │
-│  │  ├─ file          │                  │     │
-│  │  ├─ config        │                  │     │
-│  │  └─ log           │                  │     │
-│  └───────────────────┘                  │     │
-│                                          │     │
-│  acosd reads/writes to mcp: scheme      │     │
-│  for tool calls (same as mcp-query)     │     │
-└──────────────────────────────────────────┘
+User prompt → LlmHandler → Gemini API (with tool definitions) → function_call response
+    → Execute MCP tool call → Feed result back to Gemini → Final natural language response
 ```
 
-### Phase 1: Embedded Rule Engine (no LLM needed)
-The AI supervisor starts as a **deterministic rule engine** that:
-- Parses natural language commands using keyword matching + patterns
-- Maps them to MCP tool calls
-- Executes the calls and formats responses
+### Implementation: AiHandler inside mcpd
 
-This is NOT an LLM — it's a structured command interpreter. But it proves the architecture: user → acosd → MCP tool calls → response.
+**Register a new "ai" service in mcpd** that orchestrates the LLM + MCP tools:
 
-### Phase 2: LLM Integration (AutoResearch)
-Once the rule engine works, iterate to add real LLM inference:
-- Option A: Cross-compile a tiny LLM (SmolLM 135M / Phi-3 Mini) for ACOS (WS4)
-- Option B: QEMU virtio-serial bridge to host LLM (bypass network)
-- Option C: Embed a small transformer in Rust (no_std compatible)
+```rust
+pub struct AiHandler;
 
-AutoResearch loop: try each option, measure tokens/sec, pick the best.
+impl ServiceHandler for AiHandler {
+    fn handle(&self, path: &McpPath, request: &JsonRpcRequest) -> JsonRpcResponse {
+        // 1. Get user query from params
+        // 2. Send to LLM proxy with tool definitions
+        // 3. If LLM returns a function_call → execute via MCP
+        // 4. Feed tool result back to LLM
+        // 5. Return final text response
+    }
+}
+```
+
+**Key difference from LlmHandler:** AiHandler calls the LLM proxy with **tool definitions** (Gemini function calling format), then executes the returned tool calls against the MCP bus.
+
+### Tool Definitions for Gemini
+
+The proxy sends these tool definitions to Gemini:
+```json
+{
+  "tools": [{
+    "function_declarations": [
+      {"name": "system_info", "description": "Get ACOS system information (kernel, uptime, etc.)"},
+      {"name": "process_list", "description": "List running processes"},
+      {"name": "memory_stats", "description": "Get memory usage statistics"},
+      {"name": "file_read", "description": "Read a file", "parameters": {"path": {"type": "string"}}},
+      {"name": "file_write", "description": "Write content to a file", "parameters": {"path": {"type": "string"}, "content": {"type": "string"}}},
+      {"name": "file_search", "description": "Search for files", "parameters": {"pattern": {"type": "string"}, "path": {"type": "string"}}},
+      {"name": "config_get", "description": "Get a config value", "parameters": {"key": {"type": "string"}}},
+      {"name": "config_set", "description": "Set a config value", "parameters": {"key": {"type": "string"}, "value": {"type": "string"}}},
+      {"name": "config_list", "description": "List all config keys"},
+      {"name": "log_write", "description": "Write to system log", "parameters": {"level": {"type": "string"}, "message": {"type": "string"}, "source": {"type": "string"}}},
+      {"name": "log_read", "description": "Read recent log entries", "parameters": {"count": {"type": "integer"}}}
+    ]
+  }]
+}
+```
+
+### Deadlock Avoidance
+
+AiHandler is inside mcpd. If it opens `mcp:process` via fd, it deadlocks (mcpd is single-threaded and already handling the current request).
+
+**Solution: Direct internal dispatch.** AiHandler gets a reference to the Router and dispatches tool calls internally without going through the kernel scheme:
+
+```rust
+impl AiHandler {
+    fn execute_tool(&self, router: &Router, tool: &str, params: Value) -> Value {
+        let (service, method) = parse_tool_name(tool); // "file_read" → ("file", "read")
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method,
+            params,
+            id: Some(Value::Number(99.into())),
+        };
+        let path = McpPath::parse(service.as_bytes()).unwrap();
+        let response = router.route(&path, &request);
+        response.result.unwrap_or(Value::Null)
+    }
+}
+```
+
+If direct Router access is too complex (borrow checker), fall back to **spawning mcp-query as a subprocess**:
+```rust
+let output = std::process::Command::new("mcp-query")
+    .args(&["system", &json_request])
+    .output()?;
+```
+
+### Changes to llm-proxy.py
+
+The proxy needs to be updated to:
+1. Accept a new `"ai_ask"` method that includes tool definitions
+2. Send tools to Gemini API via `tools` parameter
+3. Handle Gemini's `function_call` responses
+4. Return structured response with function calls for ACOS to execute
 
 ## WS5 Tasks
 
-### Phase A: AI Daemon foundation (Dev)
-5.1 Create `acosd` daemon — registers `ai` service in mcpd, handles "ask" method
-5.2 Command parser — extract intent + entities from natural language input
-5.3 Tool call generator — map parsed intent to MCP service + method + params
-5.4 Tool call executor — open mcp:<service>, write request, read response (like mcp-query)
-5.5 Response formatter — convert raw JSON-RPC response to human-readable text
+### Phase A: AI Tool Calling (core)
+5.1 Update llm-proxy.py: add tool definitions, handle Gemini function_call responses
+5.2 Create AiHandler in mcp_scheme: "ask" method, calls proxy with tools
+5.3 Tool call executor: parse function_call, dispatch to MCP service
+5.4 Result feedback: send tool results back to LLM for final answer
+5.5 Register "ai" service in mcpd, add "ai" to mcp-query CLI shorthand
 
-### Phase B: Multi-step reasoning (Dev + AutoResearch)
-5.6 Chain planner — decompose complex requests into multiple tool calls
-5.7 Context memory — remember previous interactions within a session (ring buffer)
-5.8 Error recovery — retry failed tool calls, explain errors to user
+### Phase B: Multi-step & Context
+5.6 Multi-turn: support LLM returning multiple function_calls in sequence
+5.7 Context memory: session state between queries (ring buffer or file)
+5.8 Error handling: graceful errors when tool calls fail
 
-### Phase C: LLM Integration (AutoResearch — requires lab iterations)
-5.9 LLM backend abstraction — trait for text generation (rule engine vs LLM)
-5.10 Evaluate LLM options for ACOS (cross-compile feasibility)
-5.11 Integrate best LLM option, benchmark tokens/sec
-5.12 Prompt engineering — system prompt for ACOS tool calling
+### Phase C: Security & Polish
+5.9 Permission model: restrict which tools the AI can call
+5.10 Audit log: every AI action logged to mcp://log automatically
+5.11 System prompt refinement: optimize for ACOS-specific tool calling accuracy
 
-### Phase D: Security (Dev)
-5.13 Permission model — acosd can only call services the user authorized
-5.14 Audit log — every AI action logged to mcp://log
+## Agent Team Structure
 
-## Technical constraints
-
-### ServiceHandler trait (same as WS3)
-acosd registers as a new service handler in mcpd:
-```rust
-router.register("ai", Box::new(AiHandler::new()));
-```
-
-The AiHandler receives requests like:
-```json
-{"jsonrpc":"2.0","method":"ask","params":{"query":"what processes are running?"},"id":1}
-```
-
-And internally calls other MCP services by opening scheme fds:
-```rust
-// Inside acosd, to call another MCP service:
-let fd = std::fs::OpenOptions::new().read(true).write(true).open("mcp:process")?;
-fd.write_all(b'{"jsonrpc":"2.0","method":"list","id":99}')?;
-let mut buf = vec![0u8; 65536];
-let n = fd.read(&mut buf)?;
-// Parse response...
-```
-
-**CRITICAL:** acosd runs INSIDE mcpd (as a handler), so it can directly use the Router to dispatch internal calls without going through the scheme fd. This is faster:
-```rust
-// Direct internal dispatch (preferred):
-let request = JsonRpcRequest { method: "list".into(), ... };
-let response = self.router.route(&McpPath::parse(b"process")?, &request);
-```
-
-However, this requires either:
-A. Passing a reference to Router into AiHandler (borrow checker challenge with &self)
-B. Making AiHandler a special handler that gets Router access
-C. Using the scheme fd approach (slower but simpler, ~10μs per call)
-
-**Recommended:** Start with option C (scheme fd) for simplicity. Optimize to internal dispatch in a later round.
-
-### BUT WAIT — acosd as handler inside mcpd has a problem:
-If AiHandler opens `mcp:process` via fd, it goes through the kernel scheme dispatch, back into mcpd — which is already handling the current request (single-threaded blocking event loop). This will DEADLOCK.
-
-**Solutions:**
-1. **Separate daemon:** acosd is a separate binary, not a handler inside mcpd. It opens mcp: fds like any other process. Simple, no deadlock.
-2. **Internal dispatch:** AiHandler calls Router directly without going through the kernel. No fd, no deadlock. But needs Router reference.
-3. **Thread pool:** mcpd uses multiple threads so one thread can handle the ai request while others handle the tool call sub-requests.
-
-**Recommended: Option 1 (separate daemon)**
-- Simplest architecture
-- No borrow checker fights
-- acosd is just like mcp-query but persistent and with a rule engine
-- Registers its OWN scheme `ai:` (separate from `mcp:`)
-- User queries: `mcp-query ai ask "..."` → opens `ai:` scheme → acosd handles it
-
-Wait — registering a second scheme requires a second `Socket::create("ai")` and a second SchemeDaemon. Let's keep it simpler:
-
-**SIMPLEST APPROACH: acosd as a standalone CLI tool**
-```
-mcp-query ai "what processes are running?"
-→ acosd binary is invoked
-→ parses the query
-→ calls mcp-query process list (or opens mcp:process fd directly)
-→ formats and prints the response
-```
-
-No daemon needed for Phase A. Just a binary that:
-1. Parses args
-2. Maps to MCP calls
-3. Executes them (open+write+read on mcp: fds)
-4. Formats output
-
-Later (Phase C) it becomes a daemon.
-
-### Cross-compilation workflow (same as WS3)
-```bash
-cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os
-# Create acosd component
-# Copy to redox build tree
-# Cross-compile with podman
-# Inject into image
-# Boot and test
-```
-
-## AutoResearch loop specifications
-
-### For command parser (Phase A, task 5.2)
-```
-FOR iteration IN 1..10:
-    1. Define/expand pattern matching rules
-    2. Add test cases (commands + expected MCP calls)
-    3. cargo test --features host-test (must pass)
-    4. Measure: % of test commands correctly parsed
-    5. Log to evolution/results/ws5_parser.tsv
-    6. Write evolution/memory/ws5_parser_round_N.md
-    7. If accuracy > 95% on 50+ test cases → STOP
-```
-
-### For LLM integration (Phase C, task 5.10-5.11)
-```
-FOR each LLM option (SmolLM-135M, Phi3-mini, TinyLlama, rule-engine):
-    1. Attempt cross-compile for x86_64-unknown-redox
-    2. If compile succeeds: measure tokens/sec in QEMU
-    3. If compile fails: document blockers
-    4. Log to evolution/results/ws5_llm_eval.tsv
-    5. Write evolution/memory/ws5_llm_round_N.md
-
-    IMPORTANT: This is a TRUE AutoResearch lab.
-    - Create a git branch for each attempt
-    - Commit after each iteration (success or failure)
-    - The git history IS the research log
-    - Failed attempts are valuable data — commit them too
-    - Use evolution/memory/ to record what was tried, what worked, what didn't
-
-    Target: > 5 tokens/sec on CPU in QEMU, < 2GB RAM
-```
-
-### For tool call accuracy (Phase B, task 5.6)
-```
-FOR iteration IN 1..15:
-    1. Define complex multi-step test scenarios
-    2. Run through the planner
-    3. Verify correct MCP calls generated in correct order
-    4. Measure: % of scenarios producing correct call chains
-    5. Log to evolution/results/ws5_toolcall.tsv
-    6. Write evolution/memory/ws5_toolcall_round_N.md
-    7. If accuracy > 90% on 30+ scenarios → STOP
-```
-
-## Agent team structure
-
-| Agent | Model | Role | Mode |
-|-------|-------|------|------|
-| impl-ai-core | sonnet | Implement acosd binary + command parser (Phase A: 5.1-5.5) | Dev |
-| impl-ai-reasoning | sonnet | Implement chain planner + context memory (Phase B: 5.6-5.8) | Dev |
-| research-llm | opus | Evaluate LLM options for ACOS, AutoResearch loop (Phase C: 5.9-5.12) | AutoResearch |
-| impl-ai-security | sonnet | Permission model + audit log (Phase D: 5.13-5.14) | Dev |
+| Agent | Model | Role |
+|-------|-------|------|
+| impl-proxy | sonnet | Update llm-proxy.py with Gemini function calling (5.1) |
+| impl-ai-handler | opus | Create AiHandler + tool executor + result feedback (5.2-5.5) |
+| impl-multi-step | sonnet | Multi-turn, context, error handling (5.6-5.8) |
+| impl-security | sonnet | Permissions + audit log (5.9-5.11) |
 
 ### Dependencies
-- impl-ai-core can start IMMEDIATELY (no deps)
-- impl-ai-reasoning DEPENDS ON impl-ai-core (needs parser + executor)
-- research-llm can start in PARALLEL (independent research)
-- impl-ai-security DEPENDS ON impl-ai-core (needs base daemon)
-- Cross-compile + boot test: AFTER impl-ai-core completes
+- impl-proxy FIRST (unblocks everything)
+- impl-ai-handler DEPENDS ON impl-proxy
+- impl-multi-step DEPENDS ON impl-ai-handler
+- impl-security DEPENDS ON impl-ai-handler
 
-## Key reference code (agents must read these)
-
-### Current mcp_scheme structure
-```
-components/mcp_scheme/src/lib.rs       — McpScheme, open/read/write/close
-components/mcp_scheme/src/protocol.rs  — JsonRpcRequest/Response
-components/mcp_scheme/src/router.rs    — Router dispatches to ServiceHandler
-components/mcp_scheme/src/handler.rs   — ServiceHandler trait, EchoHandler, McpHandler
-components/mcp_scheme/src/system_handlers.rs  — SystemInfoHandler, ProcessHandler, MemoryHandler
-components/mcp_scheme/src/file_handlers.rs    — FileReadHandler, FileWriteHandler, FileSearchHandler
-components/mcp_scheme/src/support_handlers.rs — LogHandler, ConfigHandler
-```
-
-### mcp-query pattern (how to call MCP from a separate binary)
-```rust
-// From components/mcp_query/src/main.rs:
-let mut file = OpenOptions::new().read(true).write(true).open("mcp:system")?;
-file.write_all(b'{"jsonrpc":"2.0","method":"info","id":1}')?;
-let mut buf = vec![0u8; 65536];
-let n = file.read(&mut buf)?;
-println!("{}", String::from_utf8_lossy(&buf[..n]));
-```
-
-### Available MCP services (for tool calling)
-```
-mcp:system   → methods: info
-mcp:process  → methods: list
-mcp:memory   → methods: stats
-mcp:file     → methods: read (params: {path})
-mcp:file_write → methods: write (params: {path, content})
-mcp:file_search → methods: search (params: {pattern, path})
-mcp:log      → methods: write (params: {level, message, source}), read (params: {count}), list
-mcp:config   → methods: get (params: {key}), set (params: {key, value}), list, delete (params: {key})
-mcp:echo     → methods: echo, ping
-mcp:mcp      → methods: initialize, tools/list, tools/call, resources/list, resources/read, prompts/list, prompts/get
-```
-
-## Success criteria
-- [ ] `mcp-query ai ask "what processes are running?"` returns formatted process list
-- [ ] `mcp-query ai ask "read /etc/hostname"` returns file content
-- [ ] `mcp-query ai ask "set config theme to dark"` executes config/set
-- [ ] `mcp-query ai ask "what kernel version?"` extracts from system/info
-- [ ] Multi-step: `mcp-query ai ask "set config x to y and log it"` chains 2 calls
-- [ ] Command parser accuracy > 95% on 50+ test cases
+## Success Criteria
+- [ ] `mcp-query ai ask "what processes are running?"` → natural language answer with real data
+- [ ] `mcp-query ai ask "read /etc/hostname"` → returns file content naturally
+- [ ] `mcp-query ai ask "set config theme dark and log it"` → chains 2 MCP calls
+- [ ] `mcp-query ai ask "what's the system status?"` → synthesizes multiple services
+- [ ] Tool calls visible in proxy logs (for debugging)
+- [ ] Every AI action logged to mcp://log
 - [ ] All existing 44 mcp_scheme tests still pass
-- [ ] Cross-compile succeeds
-- [ ] Boot still succeeds (ACOS_BOOT_OK in < 5s)
-- [ ] acosd binary < 1MB
-- [ ] evolution/memory/ has round entries for parser and toolcall iterations
-- [ ] (Phase C bonus) LLM generates responses at > 5 tok/s in QEMU
+- [ ] Cross-compile succeeds, ACOS boots with AI service
+- [ ] mcp-query ai ask "..." works end-to-end in QEMU at reasonable speed
 
 ---PROMPT END---
 
 ## Notes pour la prochaine session
 
-1. WS5 Phase A (rule engine) est indépendant de WS4 — on peut le faire maintenant
-2. WS5 Phase C (LLM) nécessitera soit WS4, soit un bridge host → QEMU
-3. L'approche recommandée est : standalone binary `acosd` (pas un handler dans mcpd) pour éviter les deadlocks
-4. Le pattern mcp-query (open+write+read sur fd) est réutilisable pour les tool calls
-5. La tâche la plus complexe est le command parser — c'est un vrai sujet AutoResearch
-6. Pour le lab AutoResearch LLM : chaque tentative = un commit git, même les échecs
-
-## Mon avis sur WS4 vs WS5
-
-**WS5 Phase A peut se faire SANS WS4.** Le rule engine ne nécessite aucun LLM. C'est un pattern matcher + MCP caller. Quand il marchera, on aura l'architecture complète : user → AI → MCP tool calls → response.
-
-**WS4 (LLM Runtime) sera nécessaire pour WS5 Phase C.** Mais c'est un chantier très dur (cross-compile d'un moteur d'inférence pour ACOS). On peut le déférer.
-
-**Recommandation :** Faire WS5 Phase A+B d'abord (rule engine + chain planner), puis WS4 quand on voudra passer au vrai LLM.
+1. **Le LLM est déjà intégré** — on n'a PAS besoin de Phase C (LLM evaluation). Gemini fonctionne.
+2. **Le réseau fonctionne** — TCP via 10.0.2.2:9999, smolnetd + dhcpd dans init
+3. **Le proxy (llm-proxy.py) doit être mis à jour** pour supporter le function calling Gemini
+4. **L'architecture AI est simple** : User → AiHandler → proxy (avec tools) → Gemini → function_call → execute MCP → feedback → réponse finale
+5. **Deadlock** : AiHandler est dans mcpd, il ne peut pas ouvrir `mcp:` via fd. Solution : dispatch interne via Router ou subprocess mcp-query.
+6. **TOUJOURS appeler l'OS "ACOS"**, jamais "Redox".
+7. **Lancer le proxy AVANT QEMU** : `python3 scripts/llm-proxy.py` sur l'hôte
