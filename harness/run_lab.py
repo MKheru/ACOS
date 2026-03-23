@@ -142,6 +142,7 @@ def main():
     parser.add_argument("--budget", type=int, default=10, help="Iteration budget (default: 10)")
     parser.add_argument("--dry-run", action="store_true", help="Print generated prompt without launching")
     parser.add_argument("--resume", action="store_true", help="Resume from last completed round")
+    parser.add_argument("--model", default="sonnet", help="Claude model to use (default: sonnet)")
     args = parser.parse_args()
 
     lab_id = args.lab
@@ -172,10 +173,18 @@ def main():
         print(f"Launching Claude Code session for lab: {lab_id}")
         print(f"Budget: {budget} iterations, starting from round {start_round}")
         print()
-        result = subprocess.run(
-            [claude_bin, "--print", "--dangerously-skip-permissions", "-p", prompt],
-            cwd=os.path.join(BASE_DIR),
-        )
+        cmd = [
+            claude_bin,
+            "--print",
+            "--model", args.model,
+            "--permission-mode", "bypassPermissions",
+            "--max-turns", "200",
+            "-p", prompt,
+        ]
+        print(f"Model: {args.model}")
+        print(f"Command: {' '.join(cmd[:6])} -p <prompt>")
+        print()
+        result = subprocess.run(cmd, cwd=os.path.join(BASE_DIR))
         print()
         print(f"Session complete. Check evolution/labs/{lab_id}_summary.md for results.")
         sys.exit(result.returncode)
