@@ -46,6 +46,11 @@ mkdir -p "$SOURCE_DIR/mcp_talk"
 cp -r "$PROJECT_DIR/components/mcp_talk/src" "$SOURCE_DIR/mcp_talk/src"
 cp "$PROJECT_DIR/components/mcp_talk/Cargo.toml" "$SOURCE_DIR/mcp_talk/Cargo.toml"
 
+# Copy acos_guardian crate (autonomous system monitor)
+echo ">>> Copying acos_guardian..."
+rm -rf "$SOURCE_DIR/acos_guardian"
+cp -r "$PROJECT_DIR/components/acos_guardian" "$SOURCE_DIR/acos_guardian"
+
 # Fix the path dependency in mcpd's Cargo.toml to point to local mcp_scheme
 sed -i 's|path = "../mcp_scheme"|path = "mcp_scheme"|' "$SOURCE_DIR/Cargo.toml"
 
@@ -87,6 +92,17 @@ if ! grep -q "mcp-talk" "$RECIPE_DIR/recipe.toml"; then
     ${build_flags}\
 \
 cp "target/${TARGET}/${build_type}/mcp-talk" "${COOKBOOK_STAGE}/usr/bin/mcp-talk"' "$RECIPE_DIR/recipe.toml"
+fi
+
+if ! grep -q "acos-guardian" "$RECIPE_DIR/recipe.toml"; then
+    sed -i '/^"""/i\
+\
+"${COOKBOOK_CARGO}" build \\\
+    --manifest-path "${COOKBOOK_SOURCE}/acos_guardian/Cargo.toml" \\\
+    --target "${TARGET}" \\\
+    ${build_flags}\
+\
+cp "target/${TARGET}/${build_type}/acos-guardian" "${COOKBOOK_STAGE}/usr/bin/acos-guardian"' "$RECIPE_DIR/recipe.toml"
 fi
 
 echo "Git rev: $REV"
