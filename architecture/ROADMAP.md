@@ -42,19 +42,21 @@ Rust            │                      │   (généraliste)   │
 
 ## Structure des Workstreams
 
-Le développement est organisé en **8 workstreams** indépendants, chacun avec ses branches AutoResearch.
+Le développement est organisé en **10 workstreams** indépendants, chacun avec ses branches AutoResearch.
 
 ```
 ACOS Development Tree
 │
-├── WS1: Kernel Identity (rebrand + isolation du build)
-├── WS2: MCP Bus (scheme natif, routing, protocol)
-├── WS3: System Services (process, file, net via MCP)
-├── WS4: LLM Runtime (moteur d'inférence local)
-├── WS5: AI Supervisor (orchestration, tool calls, mémoire)
-├── WS6: Developer Experience (SDK, docs, tooling)
-├── WS7: Konsole — Multi-Console Natif & Display Manager
-└── WS8: Human Interface (terminal IA, Servo/WASM, voix)
+├── WS1: Kernel Identity (rebrand + isolation du build)          ✅ COMPLETE
+├── WS2: MCP Bus (scheme natif, routing, protocol)               ✅ COMPLETE
+├── WS3: System Services (process, file, net via MCP)            ✅ COMPLETE
+├── WS4: LLM Runtime (Gemini proxy + SmolLM backup)             ✅ COMPLETE
+├── WS5: AI Supervisor (orchestration, tool calls)               ✅ COMPLETE
+├── WS6: Developer Experience (SDK, docs, tooling)               ⏸ Deferred
+├── WS7: Konsole — Multi-Console Natif & Display Manager         ✅ COMPLETE
+├── WS8: Human Interface (mcp-talk, terminal IA conversationnel) ✅ COMPLETE
+├── WS9: AI Guardian — Autonomous System Monitor                 ← NEXT
+└── WS10: Rich Interface (Servo, voix, dashboard, thèmes)       📋 Planned
 ```
 
 ---
@@ -421,36 +423,118 @@ WS7 (Konsole) ──→ WS5 (Supervisor utilise Root Konsole)
 | 8.7 | Dashboard système web dans une Konsole Servo | Dur | Dev | `beta/ws8-dashboard` |
 | 8.8 | Thèmes et personnalisation visuelle | Facile | Dev | `beta/ws8-themes` |
 
+**Statut WS8 : ✅ COMPLETE (2026-03-24)**
+
+**Résultat :** mcp-talk (terminal IA conversationnel) avec TalkHandler (6 méthodes MCP), line editor raw-mode, 7 commandes spéciales, colorisation ANSI, security hardening. 300 tests. QEMU validé — l'IA répond, les tool calls s'exécutent.
+
+---
+
+## WS9: AI Guardian — Autonomous System Monitor
+
+**Objectif :** Un agent IA autonome (`acos-guardian`) surveille le système en permanence. Il tourne dans une boucle de monitoring, affiche l'état sur la console droite, et alerte l'utilisateur via des prompts interactifs quand il détecte une anomalie.
+
+**C'est le premier processus IA autonome d'ACOS** — il opère sans intervention humaine, faisant d'ACOS un OS véritablement agent-centric.
+
+### Architecture boot WS9
+```
+Boot → split console 50/50 vertical
+  ├── LEFT  (Konsole 1): mcp-talk     ← Terminal utilisateur interactif
+  └── RIGHT (Konsole 0): acos-guardian ← Moniteur autonome
+```
+
+### Composants
+- **acos-guardian** — Binaire autonome, boucle de monitoring (poll 30s)
+- **GuardianHandler** — Service MCP `mcp:guardian` (state, anomalies, respond, config, history)
+- **Anomaly Detection Engine** — 5 détecteurs : ProcessCrash, MemoryThreshold, LogErrors, FileChanges, ServiceDown
+- **Interactive Prompt System** — Prompts de choix (fix/ignore/instruct) envoyés à la console utilisateur
+- **Boot Integration** — Split console natif, mcp-talk comme shell par défaut
+
+### Tâches
+
+| # | Tâche | Complexité | Mode |
+|---|---|---|---|
+| 9.1 | GuardianHandler + data model (state, anomalies, config) | Moyen | Dev |
+| 9.2 | acos-guardian binary + monitoring loop (poll → detect → display) | Moyen | Dev |
+| 9.3 | ProcessCrash detector | Moyen | Dev |
+| 9.4 | MemoryThreshold detector | Facile | Dev |
+| 9.5 | LogError detector | Moyen | Dev |
+| 9.6 | FileChange detector | Moyen | Dev |
+| 9.7 | ServiceDown detector | Moyen | Dev |
+| 9.8 | Interactive prompt system (choice display + user response) | Dur | Dev |
+| 9.9 | mcp-talk integration (detect & render guardian prompts) | Dur | Dev |
+| 9.10 | Boot integration (50/50 split, auto-launch, mcp-talk as default shell) | Moyen | Dev |
+| 9.11 | Anomaly detection accuracy optimization | Dur | **AutoResearch** |
+| 9.12 | Poll interval optimization (responsiveness vs CPU) | Moyen | **AutoResearch** |
+
+**Critère de merge :** À boot, console split 50/50 avec mcp-talk à gauche et guardian à droite. Le guardian détecte un crash de processus simulé et envoie un prompt interactif à l'utilisateur.
+
+**Métriques AutoResearch :**
+- Detection rate (% anomalies détectées) — target > 95%
+- False positive rate — target < 5%
+- Detection latency (secondes) — target < 35s
+- CPU overhead during monitoring — target < 2%
+
+> Voir `APEX_WS9_GUARDIAN.md` pour le prompt APEX complet avec phases détaillées, agents et labs.
+
+---
+
+## WS10: Rich Interface — Servo, Voix, Dashboard, Thèmes
+
+**Objectif :** Transformer ACOS d'un OS textuel en un OS à interface riche avec navigateur web intégré, interface vocale, dashboard système graphique, et personnalisation visuelle.
+
+### Composants
+- **Servo Browser Integration** — Moteur web Rust comme type de Konsole (HTML/CSS/JS)
+- **DOM Exposure** — `mcp://ui/dom` permet à l'IA de lire/modifier le DOM
+- **Voice Interface** — STT (Whisper.cpp) → MCP → LLM → TTS (Piper)
+- **System Dashboard** — Page web temps réel dans une Servo Konsole
+- **Themes** — `mcp:ui/theme` avec palettes ANSI + CSS variables
+
+### Tâches
+
+| # | Tâche | Complexité | Mode |
+|---|---|---|---|
+| 10.1 | Cross-compiler Servo embedding pour ACOS | Très dur | Dev |
+| 10.2 | ServoKonsole type (framebuffer GPU) | Dur | Dev |
+| 10.3 | `mcp:ui/dom` — query + modify DOM | Dur | Dev |
+| 10.4 | `mcp:ui/render` — charger et afficher HTML | Dur | Dev |
+| 10.5 | Whisper.cpp STT integration | Dur | Dev |
+| 10.6 | Piper TTS integration | Dur | Dev |
+| 10.7 | `mcp:voice/listen` et `mcp:voice/speak` | Moyen | Dev |
+| 10.8 | System dashboard HTML (acos://dashboard) | Moyen | Dev |
+| 10.9 | Theme engine + thèmes pré-définis | Moyen | Dev |
+| 10.10 | Wake word detection ("Hey ACOS") | Dur | **AutoResearch** |
+
+**Critère de merge :** Une page HTML s'affiche dans une Servo Konsole, l'IA peut lire le DOM, et l'utilisateur peut parler à ACOS.
+
+> Voir `APEX_WS10_RICH_INTERFACE.md` pour l'architecture détaillée.
+
 ---
 
 ## Séquencement & Dépendances
 
 ```
-Trimestre 1 (Phase Fondation)
-════════════════════════════
-WS1 ████████████████░░░░░░░░  Kernel Identity + build offline
-WS2 ████████████████████████  MCP Bus complet
-WS6 ████████░░░░░░░░░░░░░░░░  README + CI + quickstart
+Trimestre 1 (Phase Fondation) ✅ DONE
+════════════════════════════════════
+WS1 ████████████████████████  Kernel Identity + build offline          ✅
+WS2 ████████████████████████  MCP Bus complet                          ✅
+WS3 ████████████████████████  System Services (10 services)            ✅
 
-Trimestre 2 (Phase Services + Konsole)
-══════════════════════════════════════
-WS3 ████████████████████████  Tous les services system/file/net
-WS4 ████████████████░░░░░░░░  LLM Runtime (évaluation + intégration)
-WS7 ████████████████████████  Konsole multi-console natif ← PRIORITAIRE
-WS6 ░░░░████████████████████  SDK + docs + tutoriels
+Trimestre 2 (Phase Intelligence + Konsole) ✅ DONE
+══════════════════════════════════════════════════
+WS4 ████████████████████████  LLM Runtime (Gemini proxy + SmolLM)     ✅
+WS5 ████████████████████████  AI Supervisor (function calling)         ✅
+WS7 ████████████████████████  Konsole (14 services, 318 tests)        ✅
 
-Trimestre 3 (Phase Intelligence)
-════════════════════════════════
-WS5 ████████████████████████  AI Supervisor (utilise Root Konsole)
-WS4 ░░░░░░░░████████████████  Optimisation LLM (GPU, hot-swap)
-WS7 ░░░░░░░░░░░░████████████  Multi-écran, recording, perf
-WS8 ████████████░░░░░░░░░░░░  Terminal IA conversationnel
+Trimestre 3 (Phase Human Interface) — EN COURS
+═══════════════════════════════════════════════
+WS8 ████████████████████████  mcp-talk (300 tests, QEMU validé)       ✅
+WS9 ████████████████░░░░░░░░  AI Guardian (autonomous monitor)        ← NEXT
+WS6 ░░░░████████████░░░░░░░░  SDK + docs + tutoriels                  ⏸
 
-Trimestre 4 (Phase Interface)
-═════════════════════════════
-WS8 ░░░░░░░░░░░░████████████  Servo/WASM, Dashboard, Voix
-WS5 ░░░░░░░░░░░░░░░░████████  Auto-diagnostic, multi-agents
-WS6 ░░░░░░░░░░░░████████████  Plugins, benchmarks publics
+Trimestre 4 (Phase Rich Interface)
+══════════════════════════════════
+WS10 ████████████████████████  Servo, DOM, Voice, Dashboard, Themes
+WS6  ░░░░░░░░████████████████  Plugins, benchmarks publics
 ```
 
 ### Graphe de dépendances
@@ -465,7 +549,13 @@ WS2 (MCP Bus) ──→ WS3 (Services) ──→ WS7 (Konsole) ──→ WS5 (Su
                   WS4 (LLM Runtime) ──→ WS5 (utilise Konsole Root)
                                                                 │
                                                                 ▼
-                                                          WS8 (UI dans Konsole)
+                                                          WS8 (mcp-talk)
+                                                                │
+                                                                ▼
+                                                          WS9 (Guardian)
+                                                                │
+                                                                ▼
+                                                          WS10 (Rich Interface)
 ```
 
 ---
@@ -526,12 +616,14 @@ L'OS s'améliore lui-même.
 ### Milestones GitHub
 | Milestone | Contenu | Cible |
 |---|---|---|
-| **v0.1 — First Light** | Boot + MCP scheme + echo service | ✅ Fait |
-| **v0.2 — Services** | system + file + net via MCP | T1 |
-| **v0.3 — Konsole** | Multi-console natif + Root IA + display manager | T2 |
-| **v0.4 — Intelligence** | LLM runtime + superviseur dans Root Konsole | T2-T3 |
-| **v0.5 — Conversation** | Shell IA conversationnel dans Konsole utilisateur | T3 |
-| **v0.6 — Self-Aware** | Auto-diagnostic + self-healing + multi-agents | T4 |
+| **v0.1 — First Light** | Boot + MCP scheme + echo service | ✅ Fait (WS1-WS2) |
+| **v0.2 — Services** | 10 system services via MCP | ✅ Fait (WS3) |
+| **v0.3 — Intelligence** | LLM runtime + AI supervisor + function calling | ✅ Fait (WS4-WS5) |
+| **v0.4 — Konsole** | Multi-console natif + Root IA + display manager | ✅ Fait (WS7) |
+| **v0.5 — Conversation** | mcp-talk terminal IA conversationnel | ✅ Fait (WS8) |
+| **v0.6 — Guardian** | AI Guardian autonome, split console, mcp-talk as shell | ← NEXT (WS9) |
+| **v0.7 — Rich Interface** | Servo browser, voice, dashboard, themes | Planned (WS10) |
+| **v0.8 — Self-Aware** | Auto-diagnostic + self-healing + multi-agents | T4 |
 | **v1.0 — First Contact** | OS complet utilisable en daily, multi-écran | T5+ |
 
 ---

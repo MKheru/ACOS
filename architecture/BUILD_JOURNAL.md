@@ -395,3 +395,134 @@ mcp-query mcp '{"jsonrpc":"2.0","method":"initialize","id":1}' → {capabilities
 3. **`setrens(0,0)`** coupe TOUT accès filesystem, pas seulement le réseau. Si un daemon doit lire des fichiers, soit on cache avant setrens, soit on ne l'utilise pas.
 4. **Les fichiers `/scheme/sys/`** n'ont pas tous le même format et certains n'existent pas sur ce build kernel. Toujours valider le format réel avant de coder un parser.
 5. **`cat` ne peut pas interroger un scheme Redox** car il ne fait pas write+read sur le même fd. Un outil dédié (mcp-query) est nécessaire.
+
+---
+
+## WS4-WS7 : Sessions intermédiaires
+
+> Voir `ROADMAP.md` pour le détail des objectifs et résultats de chaque workstream.
+> - **WS4 :** LLM Runtime — Gemini 2.5 Flash via TCP proxy (40 tok/s), SmolLM-135M backup local
+> - **WS5 :** AI Supervisor — Function calling Gemini + MCP tool dispatch via `Arc<Router>`
+> - **WS7 :** Konsole — Multi-console (14 services MCP), DisplayHandler, InputRouter, AiKonsoleBridge. 318 tests. QEMU validé.
+
+---
+
+## WS8 : Human Interface — Terminal IA Conversationnel (2026-03-24)
+
+### Objectif
+Créer **mcp-talk** — un terminal conversationnel IA-natif pour ACOS. Remplace le shell classique (ion) comme interface principale. L'utilisateur parle en langage naturel, ACOS exécute des tool calls MCP et affiche les résultats.
+
+### Phase A : TalkHandler — Service de conversation
+
+**`src/talk_handler.rs`** — Nouveau service MCP `mcp:talk` avec gestion de conversations.
+
+**6 méthodes MCP :**
+| Méthode | Description |
+|---|---|
+| `create` | Créer une conversation (owner) |
+| `ask` | Envoyer un message, recevoir réponse IA + tool calls |
+| `history` | Récupérer l'historique (avec count optionnel) |
+| `list` | Lister les conversations actives |
+| `clear` | Effacer l'historique d'une conversation |
+| `system_prompt` | Définir le prompt système d'une conversation |
+
+**Modèle de données :**
+```rust
+Conversation { id, history: Vec<Message>, owner, created_at }
+Message { role: User|Assistant|System|ToolResult, content, timestamp }
+```
+
+**Flow `ask` :** user message → append history → build prompt → mcp:ai/ask → parse tool calls → execute via router → format results → return
+
+**12 tests unitaires + 9 tests sécurité/edge cases = 21 nouveaux tests.**
+
+### Phase B : mcp-talk REPL Binary
+
+**`components/mcp_talk/`** — Nouveau binaire Cargo, terminal interactif.
+
+**Line editor raw-mode :**
+- Arrow keys (left/right pour curseur, up/down pour historique)
+- Insert mode (texte inséré à la position curseur)
+- Command history : 100 entrées, navigation up/down
+- Raccourcis : Ctrl+A (début), Ctrl+E (fin), Ctrl+U (effacer ligne), Ctrl+K (effacer après curseur), Ctrl+C (annuler), Ctrl+D (quitter), Home/End, Delete
+
+**Commandes spéciales :**
+| Commande | Action |
+|---|---|
+| `/help` | Afficher l'aide |
+| `/keys` | Afficher les raccourcis clavier |
+| `/history` | Afficher l'historique de conversation |
+| `/clear` | Effacer la conversation |
+| `/cls` | Effacer l'écran |
+| `/konsole` | Afficher l'état des consoles |
+| `/quit` | Quitter mcp-talk |
+
+**Sortie colorisée (ANSI) :**
+- Vert : réponses IA
+- Jaune : tool calls
+- Rouge : erreurs
+- Gris : messages système
+
+### Phase C : System Prompt Engineering
+
+Le system prompt définit le comportement de l'IA comme interface ACOS :
+- Autorité root sur le système
+- Action-oriented : exécute d'abord, explique ensuite
+- Bilingue (français/anglais selon la langue de l'utilisateur)
+- Jamais de JSON brut — toujours formaté en texte lisible
+- Limite de 15 tool calls par réponse
+
+### Phase D : Sécurité
+
+**Hardening appliqué :**
+| Mesure | Valeur |
+|---|---|
+| Ownership checks | Chaque conversation vérifie le propriétaire |
+| History cap | 200 messages max par conversation |
+| Message length limit | 16 KB max |
+| Conversation count limit | 100 conversations max |
+| Prompt injection mitigation | Sanitization des inputs |
+
+### Phase E : Cross-compilation & Boot
+
+- `inject_mcpd.sh` mis à jour pour 3 binaires : `mcpd`, `mcp-query`, `mcp-talk`
+- Boot banner mis à jour : 15 services, ligne WS8, "talk" dans la liste des services
+- **QEMU validé :** mcp-talk démarre, l'IA répond, les tool calls s'exécutent, les fichiers sont créés
+
+### Bugs et corrections
+
+**1. Memory stats à zéro**
+- Les memory stats lisaient des fichiers inexistants
+- **Fix :** Lecture depuis `/scheme/sys/context`, estimation basée sur les colonnes MEM des processus
+
+**2. Process list pauvre**
+- La liste des processus ne montrait que PID et NAME
+- **Fix :** Enrichi avec PPID, état (running/sleeping/blocked), mémoire par processus
+
+**3. System prompt trop permissif**
+- L'IA dumpait du JSON brut et ne formatait pas les réponses
+- **Fix :** Réécriture complète du system prompt — instructions explicites de formatage, limites de tool calls, comportement bilingue
+
+**4. Detailed error messages manquantes**
+- Les file handlers retournaient des erreurs génériques
+- **Fix :** Messages d'erreur détaillés pour debugging
+
+### Métriques finales WS8
+
+| Métrique | Valeur |
+|---|---|
+| Services actifs | 15 (+ talk) |
+| Tests unitaires | 300 passing (282 existants + 12 TalkHandler + 9 security) |
+| Binaries | mcpd (876K), mcp-query (545K), mcp-talk (nouveau) |
+| Boot time | ~4s |
+| Commandes spéciales | 7 (/help, /keys, /history, /clear, /cls, /konsole, /quit) |
+| Line editor features | Arrow keys, history (100), Ctrl shortcuts, Home/End, Delete, Insert mode |
+| Security measures | 5 (ownership, history cap, msg limit, conv limit, injection mitigation) |
+| Chain | mcp-talk → mcp:talk → mcp:ai → mcp:llm → tcp:10.0.2.2:9999 → Gemini 2.5 Flash |
+
+### Leçons apprises
+
+1. **Le system prompt est le produit** — la qualité de l'interaction dépend plus du prompt engineering que du code. Itérations multiples nécessaires.
+2. **Raw-mode terminal est complexe** — gérer les escape sequences ANSI pour chaque touche (arrows, Home/End, Delete) nécessite un state machine complet.
+3. **L'ownership des conversations est critique** — sans vérification, n'importe quel processus pourrait lire/modifier les conversations d'un autre.
+4. **Le formatage des réponses IA** doit être explicitement spécifié dans le system prompt — les LLMs ont tendance à dumper du JSON brut si on ne leur dit pas de formater.
