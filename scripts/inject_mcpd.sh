@@ -51,6 +51,11 @@ echo ">>> Copying acos_guardian..."
 rm -rf "$SOURCE_DIR/acos_guardian"
 cp -r "$PROJECT_DIR/components/acos_guardian" "$SOURCE_DIR/acos_guardian"
 
+# Copy acos_mux crate (terminal multiplexer)
+echo ">>> Copying acos_mux..."
+rm -rf "$SOURCE_DIR/acos_mux"
+cp -r "$PROJECT_DIR/components/acos_mux" "$SOURCE_DIR/acos_mux"
+
 # Fix the path dependency in mcpd's Cargo.toml to point to local mcp_scheme
 sed -i 's|path = "../mcp_scheme"|path = "mcp_scheme"|' "$SOURCE_DIR/Cargo.toml"
 
