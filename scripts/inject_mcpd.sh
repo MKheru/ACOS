@@ -36,6 +36,11 @@ mkdir -p "$SOURCE_DIR/llm_engine"
 cp -r "$PROJECT_DIR/components/llm_engine/src" "$SOURCE_DIR/llm_engine/src"
 cp "$PROJECT_DIR/components/llm_engine/Cargo.toml" "$SOURCE_DIR/llm_engine/Cargo.toml"
 
+# Copy mcp_query crate (CLI debug tool)
+mkdir -p "$SOURCE_DIR/mcp_query"
+cp -r "$PROJECT_DIR/components/mcp_query/src" "$SOURCE_DIR/mcp_query/src"
+cp "$PROJECT_DIR/components/mcp_query/Cargo.toml" "$SOURCE_DIR/mcp_query/Cargo.toml"
+
 # Copy mcp_talk crate (AI terminal interface)
 mkdir -p "$SOURCE_DIR/mcp_talk"
 cp -r "$PROJECT_DIR/components/mcp_talk/src" "$SOURCE_DIR/mcp_talk/src"
