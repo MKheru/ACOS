@@ -128,9 +128,12 @@ for name in "${!BINARIES[@]}"; do
     INJECTED=$((INJECTED + 1))
 done
 
-# Fix branding
+# Fix branding — both /etc/issue (pre-login banner) and /etc/motd (post-login)
 printf '########## ACOS ##########\n# Agent-Centric OS        #\n# Login: user or root     #\n# root password: password  #\n############################\n' > "$MOUNT_POINT/etc/issue"
 echo "  Fixed /etc/issue branding"
+
+printf 'Welcome to ACOS — Agent-Centric Operating System\nMCP Bus: mcp://\nType mcp-talk for AI, mcp-query for services, acos-mux for terminal multiplexer.\n' > "$MOUNT_POINT/etc/motd"
+echo "  Fixed /etc/motd (Welcome message)"
 
 # Verify init scripts
 if [ ! -f "$MOUNT_POINT/usr/lib/init.d/15_mcp" ]; then
