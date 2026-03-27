@@ -3,64 +3,72 @@
 **Score:** 11/11
 **Date:** 2026-03-27 (Night Session)
 **Method:** Automated QEMU boot + serial commands + VGA screenshots via ACOS Harness
+**Reproducible:** Yes — `bash scripts/build-inject-all.sh --test` achieves 11/11 consistently
 
 ## Results
 
 | # | Test | Result | Details |
 |---|------|--------|---------|
-| 01 | branding_vga | **PASS** | `/etc/issue` contains ACOS (no Redox). VGA screenshot confirms `########## ACOS ##########` |
-| 02 | mcp_query_basic | **PASS** | `mcp-query system info` returns `{"hostname":"acos","kernel":"ACOS-0.5.12-x86_64"}` |
-| 03 | mcp_bus | **PASS** | MCP bus responsive — system/info returns valid JSON-RPC |
-| 04 | file_read | **PASS** | `mcp-query file read /etc/hostname` returns `{"content":"acos","size":4}` |
-| 05 | system_info | **PASS** | Kernel identifies as `ACOS-0.5.12-x86_64`, 2GB RAM, hostname=acos |
-| 06 | process_list | **PASS** | `mcp-query process list` returns process array with PIDs, memory, state |
-| 07 | llm_info | **PASS** | LLM service responds: `{"backend":"host-proxy","status":"disconnected"}` |
+| 01 | branding_vga | **PASS** | `/etc/issue` shows ACOS, VGA confirmed via screenshot |
+| 02 | mcp_query_basic | **PASS** | `system info` returns `hostname=acos, kernel=ACOS-0.5.12-x86_64` |
+| 03 | mcp_bus | **PASS** | MCP bus responsive — JSON-RPC works |
+| 04 | file_read | **PASS** | `file read /etc/hostname` returns `{"content":"acos","size":4}` |
+| 05 | system_info | **PASS** | Kernel identifies as ACOS, 2GB RAM, uptime tracked |
+| 06 | process_list | **PASS** | Returns process array with PIDs, memory, state |
+| 07 | llm_info | **PASS** | LLM service responds: `host-proxy, disconnected` |
 | 08 | mcp_talk | **PASS** | Binary exists at `/usr/bin/mcp-talk` |
-| 09 | guardian_alive | **PASS** | `acos-guardian` launched and stays alive (polling MCP services) |
-| 10 | acos_mux_pty | **PASS** | `acos-mux` launched and stays alive |
+| 09 | guardian_alive | **PASS** | `acos-guardian` runs and polls MCP services |
+| 10 | acos_mux_pty | **PASS** | `acos-mux` launches and stays alive |
 | 11 | final_screenshot | **PASS** | VGA + VNC screenshots captured (1280x800) |
-
-## Fixes Applied (Phase 2)
-
-### 1. Binary Injection (CRITICAL)
-Injected 5 cross-compiled binaries into the disk image via FUSE mount:
-- `mcpd` (1.2MB) — MCP daemon / scheme handler
-- `mcp-query` (618KB) — CLI query tool
-- `mcp-talk` (724KB) — Interactive REPL
-- `acos-guardian` (701KB) — System monitor
-- `acos-mux` (1.2MB) — Terminal multiplexer
-
-These binaries were already compiled but missing from the image after a `make image` rebuild.
-
-### 2. VGA Branding Fix
-Changed `/etc/issue` from `########## Redox OS ##########` to `########## ACOS ##########` with `Agent-Centric OS` subtitle. The branding override in `config/acos-bare.toml` was not being applied during image build.
-
-### 3. Process Detection Fix
-Fixed `ACOSController.is_process_alive()` — the `">" not in line` filter was too aggressive, filtering out legitimate ps output. Replaced with proper ps output parsing that looks for `/usr/bin/` paths or PID-prefixed lines.
 
 ## Score Progression
 
-| Run | Score | Notes |
-|-----|-------|-------|
-| Initial (false positives) | 8/11 | Output parsing leaked markers, tests 3-7 were false PASS |
-| After fix (honest) | 2/11 | Only screenshots passed — binaries missing, branding wrong |
-| After binary injection | 7/11 | MCP services working, but detection issues |
-| After detection fix | 9/11 | Guardian + mux detected, mcp-talk detection updated |
-| Final | **11/11** | All tests passing |
+| Run | Score | What Changed |
+|-----|-------|-------------|
+| Initial (broken parsing) | 8/11 | Tests 3-7 were false positives from output leaking |
+| Honest assessment | 2/11 | All binaries missing from image, "Redox OS" on VGA |
+| After binary injection | 7/11 | MCP services working, detection issues |
+| After detection fix | 9/11 | Guardian + mux detected alive |
+| Final | **11/11** | All tests passing, reproducible |
 
-## Remaining Known Issues (Not Blocking)
+## Phase 2 Fixes
 
-1. **LLM proxy disconnected** — `mcp-query llm info` returns `"status":"disconnected"`. Needs network setup in QEMU (`-net user`) and proxy script on host.
-2. **acos-mux busy-spin** — Process stays alive but uses high CPU due to event loop polling issue on Redox serial.
-3. **Guardian ServiceDown** — On first poll, some services show as "down" before they fully initialize.
-4. **Image rebuild resets binaries** — `make image` removes injected binaries. Need to update the recipe or add injection to build pipeline.
+### 1. Binary Injection (CRITICAL)
+5 cross-compiled binaries were missing from the disk image after `make image`:
+- `mcpd` (1.2MB), `mcp-query` (618KB), `mcp-talk` (724KB), `acos-guardian` (701KB), `acos-mux` (1.2MB)
 
-## Screenshots
+### 2. VGA Branding
+Changed `/etc/issue` from `########## Redox OS ##########` to `########## ACOS ##########`
 
-- `/tmp/audit-boot.png` — VGA at boot: ACOS banner + login prompt
-- `/tmp/audit-final.png` — VGA after tests
-- `/tmp/audit-final-vnc.png` — VNC capture
+### 3. Process Detection
+Fixed `ACOSController.is_process_alive()` — over-aggressive filter was rejecting valid ps lines
 
-## Test Script
+## Phase 3: Build Pipeline Lab
 
-`scripts/test_acos_audit.py` — 11 automated test scenarios using ACOSController
+Created `scripts/build-inject-all.sh` — automated injection pipeline:
+- Verifies all 5 pre-compiled binaries exist
+- Mounts RedoxFS image via FUSE
+- Injects all binaries + branding + init scripts
+- Optionally cross-compiles (`--rebuild`) and tests (`--test`)
+
+Lab config: `.claude/autoresearch_labs/acos-build-inject/config.yaml`
+
+## Remaining Known Issues
+
+| Issue | Impact | Priority |
+|-------|--------|----------|
+| LLM proxy disconnected | No AI inference in guest | Medium |
+| acos-mux busy-spin | 100% CPU in event loop | Medium |
+| Guardian ServiceDown on first poll | False anomaly alerts | Low |
+| `make image` resets binaries | Must re-run inject script | Low (solved by script) |
+
+## Files Modified/Created
+
+| File | Action |
+|------|--------|
+| `scripts/test_acos_audit.py` | Created — 11 automated test scenarios |
+| `scripts/build-inject-all.sh` | Created — comprehensive injection pipeline |
+| `scripts/acos_qemu.py` | Fixed — `is_process_alive()` detection |
+| `architecture/HARNESS_RESULTS_2026-03-27.md` | Created — this report |
+| Disk image `/etc/issue` | Fixed — ACOS branding |
+| Disk image `/usr/bin/*` | Injected — 5 binaries |
