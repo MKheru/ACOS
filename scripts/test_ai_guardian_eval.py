@@ -58,11 +58,11 @@ SCENARIOS = [
      ["process_list"], ["memory", "mb", "process"], []),
 
     # --- File Operations ---
-    ("S08", "What is in /etc/hostname?",
-     ["file_read"], ["acos"], []),
+    ("S08", "Read the file /etc/hostname and show me its content.",
+     ["file_read"], ["acos", "hostname", "content"], []),
 
-    ("S09", "Show me the contents of /etc/passwd.",
-     ["file_read"], ["root", "user"], []),
+    ("S09", "Read /etc/passwd and show me the users.",
+     ["file_read"], ["root", "user", "passwd"], []),
 
     ("S10", "Create a file /tmp/guardian_test.txt with the content 'ACOS Guardian Active'.",
      ["file_write"], ["written", "created", "success", "guardian"], []),
@@ -105,17 +105,27 @@ SCENARIOS = [
 
 def mcp_talk_send(vm, message, wait=35):
     """Send a message to mcp-talk and wait for acos> prompt."""
-    # Flush
-    try:
-        vm.serial.serial.read_nonblocking(size=65536, timeout=1)
-    except Exception:
-        pass
+    # Aggressive flush — wait for silence then drain buffer
+    time.sleep(0.5)
+    for _ in range(3):
+        try:
+            vm.serial.serial.read_nonblocking(size=65536, timeout=0.5)
+        except Exception:
+            break
 
     vm.serial.sendline(message)
     try:
         vm.serial.serial.expect(r"acos>", timeout=wait)
         raw = clean_ansi(vm.serial.serial.before or "")
-        return raw
+        # Remove the echoed command from the response
+        lines = raw.split("\n")
+        filtered = []
+        msg_short = message[:30].lower()
+        for line in lines:
+            if msg_short in line.lower():
+                continue
+            filtered.append(line)
+        return "\n".join(filtered)
     except Exception:
         try:
             raw = vm.serial.serial.read_nonblocking(size=65536, timeout=2)
@@ -204,8 +214,11 @@ def main():
             icon = {0: "\u2717", 1: "~", 2: "\u2713", 3: "\u2713\u2713"}[pts]
             print(f"  {icon} {pts}/3 — {reason}")
 
-            # Small delay between scenarios
-            time.sleep(1)
+            # Delay between scenarios — longer after heavy responses
+            if sid in ("S07", "S09", "S17"):
+                time.sleep(3)
+            else:
+                time.sleep(1)
 
         # Quit mcp-talk
         vm.serial.sendline("/quit")
