@@ -148,6 +148,29 @@ MCP_TOOLS = [
             "required": ["message"],
         },
     },
+    {
+        "name": "command_run",
+        "description": "Execute a shell command on ACOS and return stdout/stderr/exit_code. Use for any system command: ls, cat, ps, uname, etc. POWERFUL: can do anything the user asks.",
+        "parameters": {
+            "type": "object",
+            "properties": {"cmd": {"type": "string", "description": "Shell command to execute, e.g. 'ls /usr/bin' or 'uname -a'"}},
+            "required": ["cmd"],
+        },
+    },
+    {
+        "name": "service_list",
+        "description": "List all ACOS init.d services with their dependencies and daemons.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "service_restart",
+        "description": "Restart an ACOS init.d service by name (e.g. '15_mcp' to restart mcpd).",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Service name from init.d, e.g. '15_mcp'"}},
+            "required": ["name"],
+        },
+    },
 ]
 
 AI_SYSTEM_PROMPT = (
