@@ -373,8 +373,9 @@ class VNCClient:
 class ACOSController:
     """Complete ACOS-in-QEMU controller combining serial, QMP, and VNC."""
 
-    def __init__(self, image=DEFAULT_IMAGE):
+    def __init__(self, image=DEFAULT_IMAGE, network=False):
         self.image = os.path.abspath(image)
+        self.network = network
         self.qemu_pid = None
         self.pty_path = None
         self.qmp = QMPClient()
@@ -425,7 +426,7 @@ class ACOSController:
             f" -qmp unix:{QMP_SOCK},server,nowait"
             f" -drive file={self.image},format=raw,if=none,id=drv0"
             f" -device nvme,drive=drv0,serial=ACOS"
-            f" -net none -no-reboot"
+            f" {'-nic user,model=e1000' if self.network else '-net none'} -no-reboot"
         )
         if firmware:
             qemu_cmd += f" -bios {firmware}"
