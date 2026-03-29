@@ -94,10 +94,14 @@ Every system interface (network, display, filesystem, processes, AI) is an MCP s
 
 This design exists for a reason: if an AI can fully control an OS through a uniform protocol, it can eventually reason about what the optimal system architecture looks like. ACOS is the software layer that makes this possible.
 
-**Phase 1** (current): ACOS -- an OS where AI is a first-class citizen, not a guest application.
-**Phase 2** (future): AI uses ACOS to reason about and design hardware architectures optimized for AI workloads.
+**Today**, Guardian relies on external LLMs via [Ollama](https://ollama.com/) running on the host -- the AI brain lives outside the OS. This is a stepping stone. The goal is for ACOS to have its **own internal AI Guardian at the heart of the kernel**, running natively, with no dependency on an external host. Guardian would then delegate specialized tasks to an agent layer modeled on [OpenClaw](https://github.com/openclaw/openclaw)'s architecture -- giving ACOS not just intelligence, but a full autonomous agent framework built into the OS itself.
 
-The project also aims to be compatible with frameworks like [OpenClaw](https://github.com/openclaw/openclaw) -- giving AI assistants a native OS to operate, instead of running as apps on top of a human-centric OS.
+The roadmap:
+
+- **Phase 1** (current): ACOS as a virtual OS -- AI is a first-class citizen, MCP bus works, Guardian consults external LLM via Ollama.
+- **Phase 2**: Internal Guardian -- on-device AI engine embedded in ACOS, no external dependency. OpenClaw-inspired agent delegation.
+- **Phase 3**: Real hardware boot -- ACOS runs on bare metal, not just QEMU.
+- **Phase 4**: AI reasons about and designs hardware architectures optimized for AI workloads.
 
 ## components
 
