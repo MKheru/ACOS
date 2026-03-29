@@ -1,0 +1,139 @@
+From 8e95987a378a769cd3a253ecc9be3d20e0683199 Mon Sep 17 00:00:00 2001
+From: Anu Kheru <ankheru@ai-agent006.home>
+Date: Sun, 29 Mar 2026 09:46:17 -0300
+Subject: [PATCH 5/6] acos: net service + Ollama LLM + Guardian AI brain + curl
+ in image
+
+- acos-bare.toml: added curl for HTTPS
+- mcpd: 19 services, net handler, Ollama integration, Guardian AI consultation
+- ion: MCP builtins, real JSON-RPC, net interface, agent mode
+- QEMU verified: net.status, echo.ping, guardian.state return real data
+---
+ config/acos-bare.toml          | 31 +++++++++++++++------
+ recipes/other/mcpd/recipe.toml | 50 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 72 insertions(+), 9 deletions(-)
+ create mode 100644 recipes/other/mcpd/recipe.toml
+
+diff --git a/config/acos-bare.toml b/config/acos-bare.toml
+index b602104..f693876 100644
+--- a/config/acos-bare.toml
++++ b/config/acos-bare.toml
+@@ -4,19 +4,31 @@
+ include = ["minimal.toml"]
+ 
+ [general]
+-filesystem_size = 196
++filesystem_size = 512
+ 
+ # ACOS-specific packages (on top of minimal)
+ [packages]
+-# mcpd is injected post-build (not in Redox package registry)
+-# See scripts/build_offline.sh for the injection step
++libevent = {}
++tmux = {}
++curl = {}
++# mcpd = {}  # TODO: fix recipe fetch (source_info.toml missing after cache clean)
++# Use scripts/build-inject-all.sh after make image instead
+ 
+-# Start MCP daemon after base init
++# Start network daemon (needed for LLM proxy via TCP)
++[[files]]
++path = "/usr/lib/init.d/10_net"
++data = """
++requires_weak 00_drivers
++notify smolnetd
++nowait dhcpd
++"""
++
++# Start MCP daemon after network
+ [[files]]
+ path = "/usr/lib/init.d/15_mcp"
+ data = """
+-requires_weak 00_base
+-nowait mcpd
++requires_weak 10_net
++scheme mcp mcpd
+ """
+ 
+ # ACOS boot marker (for QEMU evaluation harness)
+@@ -36,17 +48,18 @@ data = "file:///usr/lib/pkg"
+ path = "/etc/motd"
+ data = """
+ Welcome to ACOS — Agent-Centric Operating System
+-Kernel: Redox micro-kernel (Rust)
++Kernel: ACOS micro-kernel (Rust)
+ MCP Bus: mcp://
++  WS9: AI Guardian — Autonomous system monitoring
+ """
+ 
+ # ACOS branding
+ [[files]]
+ path = "/usr/lib/os-release"
+ data = """
+-PRETTY_NAME="ACOS 0.1.0-bare"
++PRETTY_NAME="ACOS 0.9.0-bare (WS9)"
+ NAME="ACOS"
+-VERSION_ID="0.1.0"
++VERSION_ID="0.9.0"
+ ID="acos"
+ """
+ 
+diff --git a/recipes/other/mcpd/recipe.toml b/recipes/other/mcpd/recipe.toml
+new file mode 100644
+index 0000000..54303de
+--- /dev/null
++++ b/recipes/other/mcpd/recipe.toml
+@@ -0,0 +1,50 @@
++[source]
++git = "file:///mnt/redox/recipes/other/mcpd/source"
++rev = "a008ad4"
++
++[build]
++template = "custom"
++script = """
++DYNAMIC_INIT
++
++export CARGO_TARGET_DIR="${COOKBOOK_SOURCE}/target"
++
++# Build mcpd (depends on mcp_scheme + llm_engine)
++"${COOKBOOK_CARGO}" build \
++    --manifest-path "${COOKBOOK_SOURCE}/Cargo.toml" \
++    --no-default-features --features redox \
++    ${build_flags}
++
++# Build mcp-query (standalone crate)
++"${COOKBOOK_CARGO}" build \
++    --manifest-path "${COOKBOOK_SOURCE}/mcp_query/Cargo.toml" \
++    ${build_flags}
++
++# Build mcp-talk (standalone crate)
++"${COOKBOOK_CARGO}" build \
++    --manifest-path "${COOKBOOK_SOURCE}/mcp_talk/Cargo.toml" \
++    ${build_flags}
++
++# Build acos-guardian (standalone crate)
++"${COOKBOOK_CARGO}" build \
++    --manifest-path "${COOKBOOK_SOURCE}/acos_guardian/Cargo.toml" \
++    ${build_flags}
++
++# Build acos-mux (terminal multiplexer) — full workspace, binary crate
++# The workspace uses edition 2024 (rust-version = "1.85").
++# crossterm is gated to cfg(not(target_os="redox")) via Cargo.toml.
++# The `acos` feature activates the pty:scheme backend for Redox.
++"${COOKBOOK_CARGO}" build \
++    --manifest-path "${COOKBOOK_SOURCE}/acos_mux/Cargo.toml" \
++    -p acos-mux \
++    --features acos \
++    ${build_flags}
++
++# Install all binaries
++mkdir -pv "${COOKBOOK_STAGE}/usr/bin"
++cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/mcpd" "${COOKBOOK_STAGE}/usr/bin/mcpd"
++cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/mcp-query" "${COOKBOOK_STAGE}/usr/bin/mcp-query"
++cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/mcp-talk" "${COOKBOOK_STAGE}/usr/bin/mcp-talk"
++cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/acos-guardian" "${COOKBOOK_STAGE}/usr/bin/acos-guardian"
++cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/acos-mux" "${COOKBOOK_STAGE}/usr/bin/acos-mux"
++"""
+-- 
+2.53.0
+

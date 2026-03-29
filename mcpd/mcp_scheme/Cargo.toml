@@ -1,0 +1,24 @@
+[package]
+name = "mcp-scheme"
+version = "0.1.0"
+edition = "2021"
+description = "MCP (Model Context Protocol) scheme handler for Redox OS / ACOS"
+
+# For cross-compilation to Redox target
+# Build with: cargo build --target x86_64-unknown-redox
+# For host testing: cargo test (uses mock syscalls)
+
+[features]
+default = ["host-test"]
+host-test = []  # Enable mock implementations for testing on Linux host
+redox = ["redox-scheme", "libredox", "syscall"]  # Enable real Redox syscall implementations
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+rustc-hash = "2"
+redox-scheme = { version = "0.11", optional = true }
+libredox = { version = "0.1", optional = true }
+syscall = { version = "0.7", optional = true, package = "redox_syscall" }
+

@@ -1,0 +1,18 @@
+[package]
+name = "llm-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal pure-Rust LLM inference engine for ACOS (Agent-Centric OS)"
+
+# For cross-compilation to ACOS target
+# Build with: cargo build --target x86_64-unknown-redox --features redox
+# For host testing: cargo check (uses mock inference)
+
+[features]
+default = ["host-test"]
+host-test = []  # Enable mock implementations for testing on Linux host
+redox = []      # Enable real inference for ACOS target
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

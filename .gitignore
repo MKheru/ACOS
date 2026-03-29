@@ -4,19 +4,29 @@
 **/*.so
 **/*.dylib
 
-# Redox build outputs (huge)
+# Redox build outputs
 redox_base/build/
 redox_base/prefix/
 redox_base/repo/
 
-# Podman state
-redox_base/build/podman/
+# Models (download separately)
+*.gguf
+
+# Private
+.env
+.claude/
 
 # Editor
 .vscode/
 *.swp
 *~
 
+# Python
+__pycache__/
+*.pyc
+
+# Backups
+*.bak*
+
 # OS
 .DS_Store
-.env

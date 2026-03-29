@@ -1,0 +1,28 @@
+From 7b1a8ed5821bfb887e4be3ef2da433637e33a2f2 Mon Sep 17 00:00:00 2001
+From: Anu Kheru <ankheru@ai-agent006.home>
+Date: Sun, 22 Mar 2026 14:20:14 -0300
+Subject: [PATCH 4/6] =?UTF-8?q?WS1:=20Fix=20login=20prompt=20'redox'=20?=
+ =?UTF-8?q?=E2=86=92=20'acos'=20(hardcoded=20in=20login.rs)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ recipes/core/userutils/recipe.toml | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/recipes/core/userutils/recipe.toml b/recipes/core/userutils/recipe.toml
+index 666bfeb..2a54e0b 100644
+--- a/recipes/core/userutils/recipe.toml
++++ b/recipes/core/userutils/recipe.toml
+@@ -1,5 +1,6 @@
+ [source]
+-git = "https://gitlab.redox-os.org/redox-os/userutils.git"
++git = "file:///mnt/redox/recipes/core/userutils/source"
++rev = "5a2674c"
+ 
+ [build]
+ template = "custom"
+-- 
+2.53.0
+

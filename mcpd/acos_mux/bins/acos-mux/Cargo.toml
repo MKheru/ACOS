@@ -1,0 +1,45 @@
+[package]
+name = "acos-mux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A GPU-ready terminal multiplexer — zero config, built-in splits, tabs, and session persistence"
+homepage = "https://github.com/IISweetHeartII/emux"
+repository.workspace = true
+keywords = ["terminal", "multiplexer", "tmux", "tui"]
+categories = ["command-line-utilities"]
+
+[features]
+# Enable the ACOS pty:scheme backend (used when targeting x86_64-unknown-redox).
+acos = ["acos-mux-pty/acos"]
+
+[dependencies]
+acos-mux-vt.workspace = true
+acos-mux-term.workspace = true
+acos-mux-pty.workspace = true
+acos-mux-render.workspace = true
+acos-mux-config.workspace = true
+acos-mux-mux.workspace = true
+acos-mux-daemon.workspace = true
+acos-mux-ipc.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+# crossterm is only available on non-Redox targets (requires mio/epoll).
+# On Redox we use a hand-rolled termion-based shim (see src/redox_compat.rs).
+[target.'cfg(not(target_os = "redox"))'.dependencies]
+crossterm.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# termion is used on Redox as the terminal I/O backend.
+[target.'cfg(target_os = "redox")'.dependencies]
+termion = "1"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["term", "process", "fs"] }
+
+[dev-dependencies]
+acos-mux-pty.workspace = true

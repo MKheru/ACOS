@@ -1,0 +1,50 @@
+[source]
+git = "https://github.com/MKheru/ACOS.git"
+branch = "main"
+
+[build]
+template = "custom"
+script = """
+DYNAMIC_INIT
+
+export CARGO_TARGET_DIR="${COOKBOOK_SOURCE}/target"
+
+# Build mcpd (depends on mcp_scheme + llm_engine)
+"${COOKBOOK_CARGO}" build \
+    --manifest-path "${COOKBOOK_SOURCE}/Cargo.toml" \
+    --no-default-features --features redox \
+    ${build_flags}
+
+# Build mcp-query (standalone crate)
+"${COOKBOOK_CARGO}" build \
+    --manifest-path "${COOKBOOK_SOURCE}/mcp_query/Cargo.toml" \
+    ${build_flags}
+
+# Build mcp-talk (standalone crate)
+"${COOKBOOK_CARGO}" build \
+    --manifest-path "${COOKBOOK_SOURCE}/mcp_talk/Cargo.toml" \
+    ${build_flags}
+
+# Build acos-guardian (standalone crate)
+"${COOKBOOK_CARGO}" build \
+    --manifest-path "${COOKBOOK_SOURCE}/acos_guardian/Cargo.toml" \
+    ${build_flags}
+
+# Build acos-mux (terminal multiplexer) — full workspace, binary crate
+# The workspace uses edition 2024 (rust-version = "1.85").
+# crossterm is gated to cfg(not(target_os="redox")) via Cargo.toml.
+# The `acos` feature activates the pty:scheme backend for Redox.
+"${COOKBOOK_CARGO}" build \
+    --manifest-path "${COOKBOOK_SOURCE}/acos_mux/Cargo.toml" \
+    -p acos-mux \
+    --features acos \
+    ${build_flags}
+
+# Install all binaries
+mkdir -pv "${COOKBOOK_STAGE}/usr/bin"
+cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/mcpd" "${COOKBOOK_STAGE}/usr/bin/mcpd"
+cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/mcp-query" "${COOKBOOK_STAGE}/usr/bin/mcp-query"
+cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/mcp-talk" "${COOKBOOK_STAGE}/usr/bin/mcp-talk"
+cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/acos-guardian" "${COOKBOOK_STAGE}/usr/bin/acos-guardian"
+cp "${CARGO_TARGET_DIR}/${TARGET}/${build_type}/acos-mux" "${COOKBOOK_STAGE}/usr/bin/acos-mux"
+"""

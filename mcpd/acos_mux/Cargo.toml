@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/acos-mux-vt",
+    "crates/acos-mux-term",
+    "crates/acos-mux-pty",
+    "crates/acos-mux-mux",
+    "crates/acos-mux-config",
+    "crates/acos-mux-daemon",
+    "crates/acos-mux-ipc",
+    "crates/acos-mux-render",
+    "bins/acos-mux",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/IISweetHeartII/emux"
+description = "A GPU-ready terminal multiplexer — zero config, built-in splits, tabs, and session persistence"
+
+[workspace.dependencies]
+# Internal crates
+acos-mux-vt = { version = "0.2.0", path = "crates/acos-mux-vt", features = ["serde"] }
+acos-mux-term = { version = "0.2.0", path = "crates/acos-mux-term" }
+acos-mux-pty = { version = "0.2.0", path = "crates/acos-mux-pty" }
+acos-mux-mux = { version = "0.2.0", path = "crates/acos-mux-mux" }
+acos-mux-config = { version = "0.2.0", path = "crates/acos-mux-config" }
+acos-mux-daemon = { version = "0.2.0", path = "crates/acos-mux-daemon" }
+acos-mux-ipc = { version = "0.2.0", path = "crates/acos-mux-ipc" }
+acos-mux-render = { version = "0.2.0", path = "crates/acos-mux-render" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+# PTY
+nix = { version = "0.31", features = ["term", "process", "fs"] }
+libc = "0.2"
+windows-sys = { version = "0.61", features = [
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+] }
+
+# Terminal UI
+crossterm = "0.29"
+
+# Crypto
+sha2 = "0.10"
+
+# Testing
+insta = { version = "1", features = ["json"] }
+
+# Benchmarking
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

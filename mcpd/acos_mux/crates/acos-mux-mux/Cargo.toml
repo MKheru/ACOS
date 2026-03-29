@@ -1,0 +1,18 @@
+[package]
+name = "acos-mux-mux"
+description = "Multiplexer engine (sessions, tabs, panes, layouts) for emux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+acos-mux-term.workspace = true
+acos-mux-pty.workspace = true
+regex = "1"
+toml.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,36 @@
+From cf964f712c8b7f65ca0cfec0874df25138a3f11f Mon Sep 17 00:00:00 2001
+From: Anu Kheru <ankheru@ai-agent006.home>
+Date: Sun, 22 Mar 2026 13:38:53 -0300
+Subject: [PATCH 2/6] WS1: Kernel + bootloader rebranded ACOS from source
+
+- kernel: "ACOS starting..." boot message (x86, aarch64, riscv64)
+- kernel: uname sysname "ACOS" (was "Redox")
+- kernel: allow unreachable-patterns for Rust version compat
+- bootloader: "ACOS Bootloader" (was "Redox OS Bootloader")
+- config: /etc/issue override for login banner
+---
+ config/acos-bare.toml | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/config/acos-bare.toml b/config/acos-bare.toml
+index 59ff6fc..b602104 100644
+--- a/config/acos-bare.toml
++++ b/config/acos-bare.toml
+@@ -53,3 +53,14 @@ ID="acos"
+ [[files]]
+ path = "/etc/hostname"
+ data = "acos"
++
++# Override login banner from base.toml (replaces "Redox OS" banner)
++[[files]]
++path = "/etc/issue"
++data = """
++########## ACOS ##########
++# Agent-Centric OS        #
++# Login: `user` or `root` #
++# root password: password  #
++############################
++"""
+-- 
+2.53.0
+

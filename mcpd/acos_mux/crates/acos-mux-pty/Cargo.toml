@@ -1,0 +1,23 @@
+[package]
+name = "acos-mux-pty"
+description = "Cross-platform PTY integration (Unix forkpty, Windows ConPTY) for acos-mux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+## Enable the ACOS pty: scheme backend (dev-host: nix/forkpty; target: pty: scheme).
+acos = []
+
+[dependencies]
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+nix.workspace = true

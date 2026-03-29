@@ -1,0 +1,25 @@
+[package]
+name = "acos-mux-daemon"
+description = "Session daemon (server, client, persistence) for acos-mux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+acos-mux-mux.workspace = true
+acos-mux-config.workspace = true
+acos-mux-ipc.workspace = true
+acos-mux-pty = { workspace = true, features = ["acos"] }
+acos-mux-term.workspace = true
+acos-mux-vt.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"

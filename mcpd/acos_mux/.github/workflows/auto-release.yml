@@ -1,0 +1,158 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: auto-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Wait for CI to pass before releasing
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  auto-release:
+    needs: ci
+    runs-on: ubuntu-latest
+    # Only run on merge commits or version bumps, skip CI-only changes
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get next version
+        id: version
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Last tag: $LAST_TAG"
+
+          # Read version from Cargo.toml (source of truth).
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          VERSION="v${CARGO_VERSION}"
+          echo "Cargo.toml version: $VERSION"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          LAST_TAG: ${{ steps.version.outputs.last_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          CHANGELOG=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges)
+
+          git tag -a "$VERSION" -m "Release ${VERSION}
+
+          Changes since ${LAST_TAG}:
+          ${CHANGELOG}"
+
+          git push origin "$VERSION"
+          echo "Tag $VERSION created and pushed"
+
+      - name: Generate release notes
+        if: steps.check.outputs.exists == 'false'
+        id: notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          LAST_TAG: ${{ steps.version.outputs.last_tag }}
+        run: |
+          {
+            echo "# Release ${VERSION}"
+            echo ""
+            echo "## Changes since ${LAST_TAG}"
+            echo ""
+
+            FEATS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges --grep="^feat")
+            if [ -n "$FEATS" ]; then
+              echo "### Features"
+              echo "$FEATS"
+              echo ""
+            fi
+
+            FIXES=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges --grep="^fix")
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo "$FIXES"
+              echo ""
+            fi
+
+            DOCS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges --grep="^docs")
+            if [ -n "$DOCS" ]; then
+              echo "### Documentation"
+              echo "$DOCS"
+              echo ""
+            fi
+
+            PERFS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges --grep="^perf")
+            if [ -n "$PERFS" ]; then
+              echo "### Performance"
+              echo "$PERFS"
+              echo ""
+            fi
+
+            REFACTORS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges --grep="^refactor")
+            if [ -n "$REFACTORS" ]; then
+              echo "### Refactoring"
+              echo "$REFACTORS"
+              echo ""
+            fi
+
+            echo "---"
+            echo ""
+            echo "### All Commits"
+            git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges
+          } > RELEASE_NOTES.md
+
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --title "Release ${VERSION}" \
+            --notes-file RELEASE_NOTES.md \
+            --latest
+
+      - name: Install Rust stable
+        if: steps.check.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        if: steps.check.outputs.exists == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Publish in dependency order, waiting for each to be available.
+          for crate in emux-vt emux-term emux-pty emux-config emux-ipc emux-mux emux-daemon emux-render emux; do
+            echo "Publishing $crate..."
+            cargo publish -p "$crate" --no-verify 2>&1 || echo "WARN: $crate publish failed (may already exist)"
+            sleep 15
+          done
+
+      - name: Skip (tag exists)
+        if: steps.check.outputs.exists == 'true'
+        run: echo "Tag ${{ steps.version.outputs.version }} already exists, skipping"

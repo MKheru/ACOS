@@ -1,0 +1,20 @@
+From 45f861e2ee410154613f0a48866282a4cb5ec7c6 Mon Sep 17 00:00:00 2001
+From: Anu Kheru <ankheru@ai-agent006.home>
+Date: Sun, 29 Mar 2026 11:51:45 -0300
+Subject: [PATCH 6/6] fix: acos-bare.toml curl + mcpd recipe
+
+---
+ recipes/core/ion/source | 1 +
+ 1 file changed, 1 insertion(+)
+ create mode 160000 recipes/core/ion/source
+
+diff --git a/recipes/core/ion/source b/recipes/core/ion/source
+new file mode 160000
+index 0000000..136bc88
+--- /dev/null
++++ b/recipes/core/ion/source
+@@ -0,0 +1 @@
++Subproject commit 136bc88eab1c98c42d25dce01e6ce9ebf82d2e0f
+-- 
+2.53.0
+

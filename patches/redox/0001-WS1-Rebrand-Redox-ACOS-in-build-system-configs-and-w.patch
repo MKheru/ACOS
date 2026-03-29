@@ -1,0 +1,295 @@
+From b14a7c6f4b5c9f6f92f2081720ecfa504e970456 Mon Sep 17 00:00:00 2001
+From: Anu Kheru <ankheru@ai-agent006.home>
+Date: Sun, 22 Mar 2026 13:15:29 -0300
+Subject: [PATCH 1/6] =?UTF-8?q?WS1:=20Rebrand=20Redox=20=E2=86=92=20ACOS?=
+ =?UTF-8?q?=20in=20build=20system,=20configs,=20and=20web=20UI?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- mk/qemu.mk: QEMU window title "ACOS" instead of "Redox OS"
+- mk/virtualbox.mk: VM name "ACOS" throughout
+- config/acos-bare.toml: login banner, package source override, cleaned comments
+- config/acos.toml: removed "based on Redox OS" from VERSION
+- src/web/html.rs: package repository titles say "ACOS"
+- src/lib.rs: added ACOS override comment on REMOTE_PKG_SOURCE
+---
+ config/acos-bare.toml | 55 ++++++++++++++++++++++++++++++++
+ config/acos.toml      | 73 +++++++++++++++++++++++++++++++++++++++++++
+ mk/qemu.mk            |  2 +-
+ mk/virtualbox.mk      | 48 ++++++++++++++--------------
+ src/lib.rs            |  2 +-
+ src/web/html.rs       |  6 ++--
+ 6 files changed, 157 insertions(+), 29 deletions(-)
+ create mode 100644 config/acos-bare.toml
+ create mode 100644 config/acos.toml
+
+diff --git a/config/acos-bare.toml b/config/acos-bare.toml
+new file mode 100644
+index 0000000..59ff6fc
+--- /dev/null
++++ b/config/acos-bare.toml
+@@ -0,0 +1,55 @@
++# ACOS Bare — Minimal bootable ACOS image for ACOS development
++# Start from minimal.toml (known to boot), add only our component
++
++include = ["minimal.toml"]
++
++[general]
++filesystem_size = 196
++
++# ACOS-specific packages (on top of minimal)
++[packages]
++# mcpd is injected post-build (not in Redox package registry)
++# See scripts/build_offline.sh for the injection step
++
++# Start MCP daemon after base init
++[[files]]
++path = "/usr/lib/init.d/15_mcp"
++data = """
++requires_weak 00_base
++nowait mcpd
++"""
++
++# ACOS boot marker (for QEMU evaluation harness)
++[[files]]
++path = "/usr/lib/init.d/99_acos_ready"
++data = """
++echo ACOS_BOOT_OK
++"""
++
++# Package source override — local packages only
++[[files]]
++path = "/etc/pkg.d/50_acos"
++data = "file:///usr/lib/pkg"
++
++# Login banner
++[[files]]
++path = "/etc/motd"
++data = """
++Welcome to ACOS — Agent-Centric Operating System
++Kernel: Redox micro-kernel (Rust)
++MCP Bus: mcp://
++"""
++
++# ACOS branding
++[[files]]
++path = "/usr/lib/os-release"
++data = """
++PRETTY_NAME="ACOS 0.1.0-bare"
++NAME="ACOS"
++VERSION_ID="0.1.0"
++ID="acos"
++"""
++
++[[files]]
++path = "/etc/hostname"
++data = "acos"
+diff --git a/config/acos.toml b/config/acos.toml
+new file mode 100644
+index 0000000..b782dae
+--- /dev/null
++++ b/config/acos.toml
+@@ -0,0 +1,73 @@
++# ACOS (Agent-Centric OS) Configuration
++# Based on minimal ACOS + MCP daemon
++
++include = ["minimal.toml"]
++
++# General settings
++[general]
++filesystem_size = 256
++
++# ACOS-specific packages
++[packages]
++mcpd = {}
++
++# MCP daemon init (starts after network)
++[[files]]
++path = "/usr/lib/init.d/15_mcp"
++data = """
++requires_weak 10_net
++notify mcpd
++"""
++
++# MCP scheme permissions (allow user access)
++# This extends the login_schemes from base.toml
++[[files]]
++path = "/etc/login_schemes.toml"
++data = """
++[user_schemes.root]
++schemes = ["*"]
++[user_schemes.user]
++schemes = [
++  # Kernel schemes
++  "debug", "event", "memory", "pipe", "serio", "irq", "time", "sys",
++  # Base schemes
++  "rand", "null", "zero", "log",
++  # Network schemes
++  "ip", "icmp", "tcp", "udp",
++  # IPC schemes
++  "shm", "chan", "uds_stream", "uds_dgram",
++  # File schemes
++  "file",
++  # Display schemes
++  "display.vesa", "display*",
++  # Other schemes
++  "pty", "sudo", "audio", "orbital",
++  # ACOS MCP scheme
++  "mcp",
++]
++"""
++
++# ACOS branding
++[[files]]
++path = "/usr/lib/os-release"
++data = """
++PRETTY_NAME="ACOS 0.1.0 (Agent-Centric OS)"
++NAME="ACOS"
++VERSION_ID="0.1.0"
++VERSION="0.1.0"
++ID="acos"
++
++HOME_URL="https://github.com/ankheru/acos"
++"""
++
++[[files]]
++path = "/etc/hostname"
++data = "acos"
++
++# ACOS boot marker (for QEMU evaluation harness)
++[[files]]
++path = "/usr/lib/init.d/99_acos_ready"
++data = """
++requires_weak 15_mcp
++echo ACOS_BOOT_OK
++"""
+diff --git a/mk/qemu.mk b/mk/qemu.mk
+index e9dc237..7f5b4c7 100644
+--- a/mk/qemu.mk
++++ b/mk/qemu.mk
+@@ -1,7 +1,7 @@
+ # Configuration file for QEMU
+ 
+ QEMU=qemu-system-$(QEMU_ARCH)
+-QEMUFLAGS=-d guest_errors -name "Redox OS $(ARCH)"
++QEMUFLAGS=-d guest_errors -name "ACOS $(ARCH)"
+ netboot?=no
+ redoxer?=no
+ VGA_SUPPORTED=no
+diff --git a/mk/virtualbox.mk b/mk/virtualbox.mk
+index 414bf1f..e2a0ffa 100644
+--- a/mk/virtualbox.mk
++++ b/mk/virtualbox.mk
+@@ -2,43 +2,43 @@
+ 
+ virtualbox: $(BUILD)/harddrive.img
+ 	echo "Delete VM"
+-	-$(VBM) unregistervm Redox --delete; \
++	-$(VBM) unregistervm ACOS --delete; \
+ 	if [ $$? -ne 0 ]; \
+ 	then \
+-		if [ -d "$$HOME/VirtualBox VMs/Redox" ]; \
++		if [ -d "$$HOME/VirtualBox VMs/ACOS" ]; \
+ 		then \
+-			echo "Redox directory exists, deleting..."; \
+-			$(RM) -rf "$$HOME/VirtualBox VMs/Redox"; \
++			echo "ACOS directory exists, deleting..."; \
++			$(RM) -rf "$$HOME/VirtualBox VMs/ACOS"; \
+ 		fi \
+ 	fi
+ 	echo "Delete Disk"
+ 	-$(RM) harddrive.vdi
+ 	echo "Create VM"
+-	$(VBM) createvm --name Redox --register
++	$(VBM) createvm --name ACOS --register
+ 	echo "Set Configuration"
+-	$(VBM) modifyvm Redox --memory 2048
+-	$(VBM) modifyvm Redox --vram 32
++	$(VBM) modifyvm ACOS --memory 2048
++	$(VBM) modifyvm ACOS --vram 32
+ 	if [ "$(net)" != "no" ]; \
+ 	then \
+-		$(VBM) modifyvm Redox --nic1 nat; \
+-		$(VBM) modifyvm Redox --nictype1 82540EM; \
+-		$(VBM) modifyvm Redox --cableconnected1 on; \
+-		$(VBM) modifyvm Redox --nictrace1 on; \
+-		$(VBM) modifyvm Redox --nictracefile1 "$(ROOT)/$(BUILD)/network.pcap"; \
++		$(VBM) modifyvm ACOS --nic1 nat; \
++		$(VBM) modifyvm ACOS --nictype1 82540EM; \
++		$(VBM) modifyvm ACOS --cableconnected1 on; \
++		$(VBM) modifyvm ACOS --nictrace1 on; \
++		$(VBM) modifyvm ACOS --nictracefile1 "$(ROOT)/$(BUILD)/network.pcap"; \
+ 	fi
+-	$(VBM) modifyvm Redox --uart1 0x3F8 4
+-	$(VBM) modifyvm Redox --uartmode1 file "$(ROOT)/$(BUILD)/serial.log"
+-	$(VBM) modifyvm Redox --usb off # on
+-	$(VBM) modifyvm Redox --keyboard ps2
+-	$(VBM) modifyvm Redox --mouse ps2
+-	$(VBM) modifyvm Redox --audio-driver $(VB_AUDIO)
+-	$(VBM) modifyvm Redox --audiocontroller hda
+-	$(VBM) modifyvm Redox --audioout on
+-	$(VBM) modifyvm Redox --nestedpaging on
++	$(VBM) modifyvm ACOS --uart1 0x3F8 4
++	$(VBM) modifyvm ACOS --uartmode1 file "$(ROOT)/$(BUILD)/serial.log"
++	$(VBM) modifyvm ACOS --usb off # on
++	$(VBM) modifyvm ACOS --keyboard ps2
++	$(VBM) modifyvm ACOS --mouse ps2
++	$(VBM) modifyvm ACOS --audio-driver $(VB_AUDIO)
++	$(VBM) modifyvm ACOS --audiocontroller hda
++	$(VBM) modifyvm ACOS --audioout on
++	$(VBM) modifyvm ACOS --nestedpaging on
+ 	echo "Create Disk"
+ 	$(VBM) convertfromraw $< $(BUILD)/harddrive.vdi
+ 	echo "Attach Disk"
+-	$(VBM) storagectl Redox --name ATA --add sata --controller IntelAHCI --bootable on --portcount 1
+-	$(VBM) storageattach Redox --storagectl ATA --port 0 --device 0 --type hdd --medium $(BUILD)/harddrive.vdi
++	$(VBM) storagectl ACOS --name ATA --add sata --controller IntelAHCI --bootable on --portcount 1
++	$(VBM) storageattach ACOS --storagectl ATA --port 0 --device 0 --type hdd --medium $(BUILD)/harddrive.vdi
+ 	echo "Run VM"
+-	$(VBM) startvm Redox
++	$(VBM) startvm ACOS
+diff --git a/src/lib.rs b/src/lib.rs
+index 7e3676a..843b771 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -9,7 +9,7 @@ mod progress_bar;
+ /// Default for maximum number of levels to descend down dependencies tree.
+ pub const WALK_DEPTH: usize = 16;
+ 
+-/// Default remote package source, for recipes with build type = "remote"
++/// ACOS: Override this URL for ACOS fork builds. Default points to Redox upstream.
+ pub const REMOTE_PKG_SOURCE: &str = "https://static.redox-os.org/pkg";
+ 
+ pub fn is_redox() -> bool {
+diff --git a/src/web/html.rs b/src/web/html.rs
+index 1f4d405..1c6a138 100644
+--- a/src/web/html.rs
++++ b/src/web/html.rs
+@@ -140,7 +140,7 @@ pub fn generate_html_pkg(
+ <head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-    <title>{name} - Redox OS Package</title>
++    <title>{name} - ACOS Package</title>
+     <link rel="stylesheet" href="style.css">
+ </head>
+ <body>
+@@ -253,12 +253,12 @@ pub fn generate_html_index(
+ <head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-    <title>Redox Package Repository</title>
++    <title>ACOS Package Repository</title>
+     <link rel="stylesheet" href="style.css">
+ </head>
+ <body>
+     <header class="index-header">
+-        <h1>Redox OS Package Repository</h1>
++        <h1>ACOS Package Repository</h1>
+         <p class="description">Repository for <code>{target}</code></p>
+     </header>
+ 
+-- 
+2.53.0
+

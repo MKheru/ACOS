@@ -1,0 +1,16 @@
+[package]
+name = "acos-mux-render"
+description = "TUI renderer with damage tracking for emux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+acos-mux-term.workspace = true
+termion = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+

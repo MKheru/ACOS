@@ -1,0 +1,79 @@
+# ACOS Bare — Minimal bootable ACOS image for ACOS development
+# Start from minimal.toml (known to boot), add only our component
+
+include = ["minimal.toml"]
+
+[general]
+filesystem_size = 512
+
+# ACOS-specific packages (on top of minimal)
+[packages]
+libevent = {}
+tmux = {}
+curl = {}
+# mcpd = {}  # TODO: fix recipe fetch (source_info.toml missing after cache clean)
+# Use scripts/build-inject-all.sh after make image instead
+
+# Start network daemon (needed for LLM proxy via TCP)
+[[files]]
+path = "/usr/lib/init.d/10_net"
+data = """
+requires_weak 00_drivers
+notify smolnetd
+nowait dhcpd
+"""
+
+# Start MCP daemon after network
+[[files]]
+path = "/usr/lib/init.d/15_mcp"
+data = """
+requires_weak 10_net
+scheme mcp mcpd
+"""
+
+# ACOS boot marker (for QEMU evaluation harness)
+[[files]]
+path = "/usr/lib/init.d/99_acos_ready"
+data = """
+echo ACOS_BOOT_OK
+"""
+
+# Package source override — local packages only
+[[files]]
+path = "/etc/pkg.d/50_acos"
+data = "file:///usr/lib/pkg"
+
+# Login banner
+[[files]]
+path = "/etc/motd"
+data = """
+Welcome to ACOS — Agent-Centric Operating System
+Kernel: ACOS micro-kernel (Rust)
+MCP Bus: mcp://
+  WS9: AI Guardian — Autonomous system monitoring
+"""
+
+# ACOS branding
+[[files]]
+path = "/usr/lib/os-release"
+data = """
+PRETTY_NAME="ACOS 0.9.0-bare (WS9)"
+NAME="ACOS"
+VERSION_ID="0.9.0"
+ID="acos"
+"""
+
+[[files]]
+path = "/etc/hostname"
+data = "acos"
+
+# Override login banner from base.toml (replaces "Redox OS" banner)
+[[files]]
+path = "/etc/issue"
+data = """
+########## ACOS ##########
+# Agent-Centric OS        #
+# Login: `user` or `root` #
+# root password: password  #
+############################
+"""

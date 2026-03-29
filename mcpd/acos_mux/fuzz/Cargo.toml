@@ -1,0 +1,25 @@
+[package]
+name = "acos-mux-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+acos-mux-vt = { path = "../crates/acos-mux-vt" }
+acos-mux-term = { path = "../crates/acos-mux-term" }
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_terminal"
+path = "fuzz_targets/fuzz_terminal.rs"
+doc = false

@@ -1,0 +1,9 @@
+[package]
+name = "mcp-query"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool to query MCP services on ACOS via the mcp: scheme"
+
+[dependencies]
+libc = "0.2"
+serde_json = "1"
