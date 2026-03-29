@@ -416,7 +416,7 @@ class VNCClient:
 class ACOSController:
     """Complete ACOS-in-QEMU controller combining serial, QMP, and VNC."""
 
-    def __init__(self, image=DEFAULT_IMAGE, network=False):
+    def __init__(self, image=DEFAULT_IMAGE, network=True):
         self.image = os.path.abspath(image)
         self.network = network
         self.qemu_pid = None

@@ -19,12 +19,13 @@ MCPD_SRC="$REDOX_DIR/recipes/other/mcpd/source"
 MOUNT_POINT="/tmp/acos_inject_$$"
 
 # Binary locations (pre-compiled)
+TARGET_DIR="$MCPD_SRC/target/x86_64-unknown-redox/release"
 declare -A BINARIES=(
-    [mcpd]="$MCPD_SRC/target/x86_64-unknown-redox/release/mcpd"
-    [mcp-query]="$MCPD_SRC/mcp_query/target/x86_64-unknown-redox/release/mcp-query"
-    [mcp-talk]="$MCPD_SRC/mcp_talk/target/x86_64-unknown-redox/release/mcp-talk"
-    [acos-guardian]="$MCPD_SRC/acos_guardian/target/x86_64-unknown-redox/release/acos-guardian"
-    [acos-mux]="$MCPD_SRC/acos_mux/target/x86_64-unknown-redox/release/acos-mux"
+    [mcpd]="$TARGET_DIR/mcpd"
+    [mcp-query]="$TARGET_DIR/mcp-query"
+    [mcp-talk]="$TARGET_DIR/mcp-talk"
+    [acos-guardian]="$TARGET_DIR/acos-guardian"
+    [acos-mux]="$TARGET_DIR/acos-mux"
 )
 
 DO_REBUILD=false
