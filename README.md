@@ -183,22 +183,26 @@ ACOS/
   harness/               Evaluation harness
 ```
 
-## development
+## where this stands and where it needs to go
 
-ACOS was built in 23 days by a single developer using AI-assisted development tools. The `docs/` folder contains the full session journals showing every step.
+ACOS started as a solo project, built in 23 days with the help of AI development tools. I'm not an OS developer by trade -- but in 2026, tools like Claude Code finally made it possible for someone with motivation and a clear vision to build a working prototype of something that would have been out of reach before.
 
-This project demonstrates that modern AI development tools allow one motivated person to tackle projects that would traditionally require a team -- from kernel modification to userspace services to LLM integration.
+The foundation is there: 19 MCP services, LLM tool calling, Guardian intelligence, a working virtual OS. But this is just a prototype, and there's a long road ahead -- real hardware boot, security hardening, multi-process Guardian, proper driver support, OpenClaw integration, and eventually the hardware design questions that motivated this whole project.
 
-Highlights from the build journal:
+**I need help.** If the vision resonates with you -- an OS built for AI, where everything is MCP -- I'd love for you to get involved. Whether you're an OS developer, a Rust engineer, an AI researcher, or just someone curious about what computing looks like when AI is a first-class citizen: contributions, feedback, ideas, and criticism are all welcome.
 
-- **WS1**: Rebranded the micro-kernel, bootloader, and login system for ACOS
-- **WS2-3**: Built the MCP bus with 12 system services
+The `docs/` folder contains the full build journal showing every step, every decision, and every mistake. Nothing is hidden.
+
+Build journal highlights:
+
+- **WS1**: Kernel + bootloader rebranding for ACOS
+- **WS2-3**: MCP bus with 12 system services
 - **WS4**: On-device LLM inference (SmolLM-135M GGUF)
 - **WS5**: AI supervisor with tool calling
 - **WS7**: Virtual console system (konsole)
 - **WS9**: Guardian autonomous monitor + LLM consultation
 - **WS10**: Terminal multiplexer
-- **Final**: Ollama integration (phi4-mini + qwen2.5), 19 live services, full network stack
+- **Final**: Ollama integration, 19 live services, full network stack
 
 ## requirements
 
