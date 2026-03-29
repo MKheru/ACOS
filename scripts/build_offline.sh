@@ -7,8 +7,7 @@
 #   ./scripts/build_offline.sh build   # Build the complete ACOS image offline
 #   ./scripts/build_offline.sh test    # Run QEMU boot test on existing image
 #
-# The script must be run from the project root:
-#   /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+# The script must be run from the ACOS project root.
 
 set -euo pipefail
 
