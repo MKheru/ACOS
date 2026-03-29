@@ -2,9 +2,11 @@
 
 An operating system where **everything is MCP**, and **AI Guardian is the brain**.
 
-ACOS is a Rust micro-kernel OS (fork of [Redox OS](https://www.redox-os.org/)) where every system interface -- network, files, processes, display -- is an MCP service. An AI Guardian watches over the system and makes decisions via local LLM. No cloud, no API keys, everything runs on your machine.
+ACOS is an AI-first OS built on a Rust micro-kernel where every system interface -- network, files, processes, display -- is an MCP service. An AI Guardian supervises the entire system and makes decisions via local LLM. No cloud, no API keys, everything runs on your machine.
 
-Built in 23 days. 54 commits. From first kernel compile to 19 live MCP services with local LLM tool calling.
+This is Phase 1 of a larger project: build an OS that AI can fully operate, so that eventually AI can determine what hardware architecture is optimal for itself. Current computing hardware hasn't fundamentally changed since its inception -- ACOS is a step toward rethinking the stack from the OS up.
+
+Built in 23 days, solo, with AI development tools. 54 commits. From first kernel compile to 19 live MCP services with local LLM tool calling.
 
 ```
         Guardian (brain)
@@ -17,6 +19,12 @@ Built in 23 days. 54 commits. From first kernel compile to 19 live MCP services 
     |
   19 MCP services — all discovered at runtime, zero hardcoded
 ```
+
+## status
+
+ACOS currently runs as a **virtual OS in QEMU**. All 19 MCP services work, the AI can call tools, Guardian consults the LLM for decisions, and the full system boots and operates.
+
+Once the feature set stabilizes, the next phase is porting ACOS to boot on real hardware.
 
 ## what it looks like
 
@@ -68,24 +76,39 @@ Type naturally. The AI is your shell.
 acos> what processes are running?
 
   Here is the list of running processes on ACOS:
-  | PID | Name                  | Memory  |
-  |-----|-----------------------|---------|
-  | 21  | /scheme/initfs/bin/redoxfs | 65 MB |
-  | 32  | /usr/bin/mcpd         | 3 MB    |
-  | 38  | /usr/bin/ion          | 4 MB    |
+  | PID | Name                         | Memory  |
+  |-----|------------------------------|---------|
+  | 21  | /scheme/initfs/bin/redoxfs   | 65 MB   |
+  | 32  | /usr/bin/mcpd                | 3 MB    |
+  | 38  | /usr/bin/ion                 | 4 MB    |
   ...
 ```
+
+## the bigger picture
+
+ACOS follows a simple principle, inspired by Unix's "everything is a file":
+
+> **Everything is MCP.**
+
+Every system interface (network, display, filesystem, processes, AI) is an MCP service accessible through the `mcp:` kernel scheme. Guardian is not a monitoring app you launch -- it's a kernel-level service that supervises all other services, always active.
+
+This design exists for a reason: if an AI can fully control an OS through a uniform protocol, it can eventually reason about what the optimal system architecture looks like. ACOS is the software layer that makes this possible.
+
+**Phase 1** (current): ACOS -- an OS where AI is a first-class citizen, not a guest application.
+**Phase 2** (future): AI uses ACOS to reason about and design hardware architectures optimized for AI workloads.
+
+The project also aims to be compatible with frameworks like [OpenClaw](https://github.com/openclaw/openclaw) -- giving AI assistants a native OS to operate, instead of running as apps on top of a human-centric OS.
 
 ## components
 
 | Component | What it does | Lines |
 |-----------|-------------|-------|
-| **mcpd** | MCP daemon — registers the `mcp://` kernel scheme, routes JSON-RPC to service handlers | ~400 |
+| **mcpd** | MCP daemon -- registers the `mcp://` kernel scheme, routes JSON-RPC to service handlers | ~400 |
 | **mcp_scheme** | 19 service handlers (system, process, memory, file, net, llm, ai, guardian, konsole...) | ~8000 |
 | **mcp_query** | CLI tool: `mcp-query <service> <method> [params]` | ~340 |
 | **mcp_talk** | Conversational AI with tool calling and multi-turn context | ~500 |
-| **acos_guardian** | Autonomous health monitor — anomaly detection + LLM consultation | ~720 |
-| **acos_mux** | Terminal multiplexer (forked from emux) | ~4000 |
+| **acos_guardian** | Autonomous health monitor -- anomaly detection + LLM consultation | ~720 |
+| **acos_mux** | Terminal multiplexer | ~4000 |
 | **llm_engine** | On-device GGUF inference (SmolLM-135M) | ~600 |
 | **ion builtins** | `mcp` and `guardian` shell commands for the Ion shell | ~2300 |
 
@@ -97,11 +120,11 @@ You need: Linux with KVM, Podman, Ollama with `phi4-mini` + `qwen2.5:7b-instruct
 # 1. Clone
 git clone https://github.com/MKheru/ACOS.git && cd ACOS
 
-# 2. Setup Redox OS base + apply ACOS patches
-./scripts/setup-redox.sh
+# 2. Set up ACOS (downloads base kernel, applies patches, links components)
+./scripts/setup-acos.sh
 
 # 3. Build the disk image
-cd redox_base
+cd base
 CI=1 PODMAN_BUILD=1 REPO_BINARY=1 make all CONFIG_NAME=acos-bare
 
 # 4. Cross-compile and inject ACOS binaries
@@ -111,7 +134,7 @@ cd .. && ./scripts/build-inject-all.sh --rebuild
 qemu-system-x86_64 \
   -machine q35 -cpu host -enable-kvm -smp 4 -m 2048 \
   -vga std -serial mon:stdio \
-  -drive file=redox_base/build/x86_64/acos-bare/harddrive.img,format=raw,if=none,id=drv0 \
+  -drive file=base/build/x86_64/acos-bare/harddrive.img,format=raw,if=none,id=drv0 \
   -device nvme,drive=drv0,serial=ACOS \
   -nic user,model=e1000 \
   -bios /usr/share/edk2/ovmf/OVMF_CODE.fd \
@@ -122,7 +145,7 @@ Login: `root` / `password`. Then type `mcp list` and you're in.
 
 ## how it works
 
-ACOS registers a kernel-level `mcp:` URL scheme via Redox's scheme system. When any process opens `mcp:system`, the kernel routes the file descriptor to `mcpd`, which parses JSON-RPC and dispatches to the appropriate service handler.
+ACOS registers a kernel-level `mcp:` URL scheme. When any process opens `mcp:system`, the kernel routes the file descriptor to `mcpd`, which parses JSON-RPC and dispatches to the appropriate service handler.
 
 ```
 process                    kernel                     mcpd
@@ -136,9 +159,9 @@ process                    kernel                     mcpd
   |<- read(response) ------- | <-- response ---------- |
 ```
 
-The AI service (`mcp:ai`) sends prompts to Ollama via the net service, receives tool call requests, executes them by dispatching to other MCP services, and returns the final answer. This means the LLM can call `system_info`, `process_list`, `file_read`, `net_dns_resolve`, etc. — all through the same MCP bus.
+The AI service (`mcp:ai`) sends prompts to Ollama via the net service, receives tool call requests, executes them by dispatching to other MCP services, and returns the final answer. The LLM can call `system_info`, `process_list`, `file_read`, `net_dns_resolve`, etc. -- all through the same MCP bus.
 
-Guardian runs as a background monitor. It polls system metrics, detects anomalies, and optionally consults the LLM to decide whether to `ALLOW`, `MONITOR`, or `BLOCK`.
+Guardian runs as a kernel-level service. It polls system metrics, detects anomalies, and consults the LLM to decide whether to `ALLOW`, `MONITOR`, or `BLOCK`.
 
 ## project structure
 
@@ -153,25 +176,29 @@ ACOS/
     acos_mux/             Terminal multiplexer
     llm_engine/           On-device GGUF inference
   ion-builtins/          MCP + Guardian shell builtins for Ion
-  config/                acos-bare.toml + mcpd recipe
-  patches/               6 Redox patches + 2 Ion patches
+  config/                ACOS image config + build recipe
+  patches/               6 kernel patches + 2 Ion patches
   docs/                  Architecture docs + session journals
   scripts/               Build, test, QEMU automation
   harness/               Evaluation harness
 ```
 
-## development history
+## development
 
-See `docs/` for the full journal. Highlights:
+ACOS was built in 23 days by a single developer using AI-assisted development tools. The `docs/` folder contains the full session journals showing every step.
 
-- **WS1**: Rebranded Redox → ACOS (kernel, bootloader, login)
-- **WS2-3**: Built MCP bus with 12 system services
+This project demonstrates that modern AI development tools allow one motivated person to tackle projects that would traditionally require a team -- from kernel modification to userspace services to LLM integration.
+
+Highlights from the build journal:
+
+- **WS1**: Rebranded the micro-kernel, bootloader, and login system for ACOS
+- **WS2-3**: Built the MCP bus with 12 system services
 - **WS4**: On-device LLM inference (SmolLM-135M GGUF)
 - **WS5**: AI supervisor with tool calling
 - **WS7**: Virtual console system (konsole)
 - **WS9**: Guardian autonomous monitor + LLM consultation
-- **WS10**: Terminal multiplexer (acos-mux)
-- **Final**: Ollama integration (phi4-mini + qwen2.5), 19 live services, network via QEMU user-mode
+- **WS10**: Terminal multiplexer
+- **Final**: Ollama integration (phi4-mini + qwen2.5), 19 live services, full network stack
 
 ## requirements
 
@@ -185,4 +212,4 @@ See `docs/` for the full journal. Highlights:
 
 Apache 2.0. See [LICENSE](LICENSE).
 
-Built on [Redox OS](https://www.redox-os.org/) (MIT license).
+Built on a micro-kernel foundation from [Redox OS](https://www.redox-os.org/) (MIT license).
