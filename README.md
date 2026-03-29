@@ -4,9 +4,9 @@ An operating system where **everything is MCP**, and **AI Guardian is the brain*
 
 ACOS is an AI-first OS built on a Rust micro-kernel where every system interface -- network, files, processes, display -- is an MCP service. An AI Guardian supervises the entire system and makes decisions via local LLM. No cloud, no API keys, everything runs on your machine.
 
-This is Phase 1 of a larger project: build an OS that AI can fully operate, so that eventually AI can determine what hardware architecture is optimal for itself. Current computing hardware hasn't fundamentally changed since its inception -- ACOS is a step toward rethinking the stack from the OS up.
+The idea of an AI-centric OS had been on my mind for a long time, but two projects made it concrete: [Redox OS](https://www.redox-os.org/), a micro-kernel written entirely in Rust, gave me a clean and modern foundation to build on. And [Karpathy's AutoResearch](https://github.com/karpathy/autoresearch) framework showed me that iterative, AI-assisted development could be applied to ambitious systems work -- not just ML experiments. ACOS was born at that intersection.
 
-Built in 23 days, solo, with AI development tools. 54 commits. From first kernel compile to 19 live MCP services with local LLM tool calling.
+This is Phase 1 of a larger project: build an OS that AI can fully operate, so that eventually AI can reason about what hardware architecture is optimal for itself. Current computing hardware hasn't fundamentally changed since its inception -- ACOS is a step toward rethinking the stack from the OS up.
 
 ```
         Guardian (brain)
@@ -185,7 +185,7 @@ ACOS/
 
 ## where this stands and where it needs to go
 
-ACOS started as a solo project, built in 23 days with the help of AI development tools. I'm not an OS developer by trade -- but in 2026, tools like Claude Code finally made it possible for someone with motivation and a clear vision to build a working prototype of something that would have been out of reach before.
+ACOS was built in 23 days. I'm not an OS developer by trade -- but in 2026, tools like Claude Code finally gave me access to the kind of leverage that turns motivation into a working prototype. Redox OS provided the kernel foundation, Karpathy's AutoResearch framework inspired the iterative development loop, and AI coding tools bridged the gap between the vision I had and the skills I didn't.
 
 The foundation is there: 19 MCP services, LLM tool calling, Guardian intelligence, a working virtual OS. But this is just a prototype, and there's a long road ahead -- real hardware boot, security hardening, multi-process Guardian, proper driver support, OpenClaw integration, and eventually the hardware design questions that motivated this whole project.
 
@@ -212,8 +212,15 @@ Build journal highlights:
 - **Runtime**: QEMU with OVMF (UEFI), ~4 GB RAM
 - **Network**: QEMU user-mode networking (`-nic user,model=e1000`) routes to Ollama on host
 
+## acknowledgments
+
+- [Redox OS](https://www.redox-os.org/) -- the Rust micro-kernel that serves as ACOS's foundation. Without this clean, modern, well-documented OS, ACOS wouldn't exist.
+- [Karpathy's AutoResearch](https://github.com/karpathy/autoresearch) -- the iterative AI research framework that inspired ACOS's development methodology and evaluation harness.
+- [Anthropic Claude Code](https://claude.ai/code) -- the AI development tool that made it possible to build a working OS prototype without a team of kernel engineers.
+- [Ollama](https://ollama.com/) -- local LLM inference that powers ACOS's AI services.
+
 ## license
 
 Apache 2.0. See [LICENSE](LICENSE).
 
-Built on a micro-kernel foundation from [Redox OS](https://www.redox-os.org/) (MIT license).
+Kernel foundation: [Redox OS](https://www.redox-os.org/) (MIT license).
