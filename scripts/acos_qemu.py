@@ -252,37 +252,80 @@ class SerialConsole:
             return True  # Shell might work even without echo match
 
     def run(self, cmd, timeout=CMD_TIMEOUT):
-        """Run a command, return cleaned output. Ion-compatible."""
-        self.serial.sendline(cmd)
-        time.sleep(1)
-        marker = f"__DONE_{int(time.time() * 1000) % 100000}__"
-        self.serial.sendline(f"echo {marker}")
+        """Run a command, return cleaned output. Ion-compatible.
+
+        Protocol:
+        1. Flush any stale data in the serial buffer
+        2. Send a unique start marker
+        3. Send the command
+        4. Send a unique end marker
+        5. Wait for end marker (with full timeout for slow commands like Ollama)
+        6. Extract everything between start and end markers
+        """
+        # Step 1: Wait for shell prompt before sending anything
+        # This ensures previous command is fully done
         try:
-            self.serial.expect(marker, timeout=timeout)
-            raw = self.serial.before or ""
-            raw = clean_ansi(raw)
-            # Filter out shell prompt echoes and command echo
-            lines = []
-            for line in raw.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                # Skip prompt echoes (root:~# with partial command)
-                if "root:" in line and "#" in line:
-                    # But keep lines that have content after the prompt
-                    after_prompt = re.sub(r'.*root:.*?#\s*', '', line)
-                    if after_prompt and marker not in after_prompt and "echo" not in after_prompt:
-                        lines.append(after_prompt)
-                    continue
-                # Skip our markers and echo commands
-                if marker in line or "echo " + marker in line:
-                    continue
-                if cmd in line:
-                    continue
-                lines.append(line)
-            return "\n".join(lines)
+            self.serial.expect(r"[#\$>]\s*$", timeout=3)
         except pexpect.TIMEOUT:
-            return None
+            pass
+        # Drain any remaining buffer
+        try:
+            self.serial.read_nonblocking(size=65536, timeout=0.5)
+        except (pexpect.TIMEOUT, pexpect.EOF):
+            pass
+        time.sleep(0.3)
+
+        # Step 2: Unique end marker
+        ts = int(time.time() * 1000) % 1000000
+        end_marker = f"__END_{ts}__"
+
+        # Step 3: Send command and wait for shell prompt to return
+        # This ensures the command has completed before we send the marker
+        self.serial.sendline(cmd)
+        try:
+            # Wait for shell prompt — this blocks until the command finishes
+            # For slow commands (Ollama), this can take 30-60s
+            self.serial.expect(r"(root:.*?#|ion>|\$)\s*$", timeout=timeout)
+        except pexpect.TIMEOUT:
+            pass
+        time.sleep(0.3)
+
+        # Step 4: Send end marker (command is now done)
+        self.serial.sendline(f"echo {end_marker}")
+
+        # Step 5: Wait for end marker
+        try:
+            self.serial.expect(end_marker, timeout=timeout)
+            raw = self.serial.before or ""
+        except pexpect.TIMEOUT:
+            # Even on timeout, grab what we have
+            raw = self.serial.before or ""
+            if not raw:
+                return None
+
+        raw = clean_ansi(raw)
+
+        # Step 5: Clean output
+        lines = []
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if end_marker in line or f"echo {end_marker}" in line:
+                continue
+            if "__END_" in line or "__FLUSH_" in line:
+                continue
+            # Skip prompt echoes
+            if "root:" in line and "#" in line:
+                after_prompt = re.sub(r'.*root:.*?#\s*', '', line)
+                if after_prompt and "__" not in after_prompt and "echo" not in after_prompt:
+                    lines.append(after_prompt)
+                continue
+            # Skip command echo (first line usually)
+            if cmd in line:
+                continue
+            lines.append(line)
+        return "\n".join(lines)
 
     def sendline(self, text):
         """Raw sendline."""
