@@ -1,10 +1,6 @@
 # APEX Prompt — WS7: Konsole — Multi-Console Natif & Display Manager
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS7 (Konsole) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS7 (Konsole) for ACOS
 
 ## IMPORTANT: Naming Convention
 **This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations. The micro-kernel is an internal implementation detail. The project, the OS, the brand = **ACOS**.
@@ -569,8 +565,6 @@ bash harness/autoresearch.sh ws7-ansi-parser 1
 4. **Shell integration:** On Redox, shells (ion) read from stdin and write to stdout. The konsole must create a pseudo-terminal pair (ptyd) and connect the shell's stdin/stdout to it.
 5. **mcpd is single-threaded.** KonsoleHandler and DisplayHandler share state via `Arc<Mutex<>>`, not through router dispatch (same pattern as AiHandler).
 6. **The render loop** should be event-driven (dirty flag), NOT polling. Render only when a konsole changes.
-
----PROMPT END---
 
 ## Notes pour la prochaine session
 

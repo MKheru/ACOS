@@ -1,10 +1,6 @@
 # APEX Prompt — WS9: AI Guardian — Autonomous System Monitor
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS9 (AI Guardian) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS9 (AI Guardian) for ACOS
 
 ## IMPORTANT: Naming Convention
 **This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations. The micro-kernel is an internal implementation detail. The project, the OS, the brand = **ACOS**.
@@ -642,8 +638,6 @@ Phase A (guardian handler) ──→ Phase B (guardian binary) ──→ Phase C
 6. **mcp-talk must be enhanced** to detect and render Guardian prompts (bordered choice boxes).
 7. **The LLM proxy must be running on host** — guardian uses AI for anomaly analysis: acos-guardian → mcp:ai/ask → mcp:llm → tcp:10.0.2.2:9999 → Gemini.
 8. **mcp-talk replaces ion as default shell** — this is a WS9 boot change. Users interact with ACOS exclusively through natural language.
-
----PROMPT END---
 
 ## Notes pour la prochaine session
 

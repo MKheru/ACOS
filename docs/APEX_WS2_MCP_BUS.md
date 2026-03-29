@@ -1,10 +1,6 @@
 # APEX Prompt — WS2: MCP Bus Implementation
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS2 (MCP Bus) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS2 (MCP Bus) for ACOS
 
 ## Context
 ACOS is an AI-native OS based on Redox OS (Rust micro-kernel). WS1 is COMPLETE — the OS boots with full ACOS branding in 4 seconds via QEMU. Zero user-visible "Redox" strings remain.
@@ -57,7 +53,7 @@ cat mcp://echo <<< '{"jsonrpc":"2.0","method":"ping","id":1}'
 
 ### Cross-compilation
 ```bash
-cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/redox_base
+cd .//redox_base
 podman run --rm \
     --cap-add SYS_ADMIN --device /dev/fuse --network=host \
     --volume "$(pwd):/mnt/redox:Z" \
@@ -88,7 +84,7 @@ fusermount3 -u "$MOUNT_DIR"
 
 ### QEMU boot test
 ```bash
-cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os
+cd ./
 ./harness/qemu_runner.sh redox_base/build/x86_64/acos-bare/harddrive.img 60
 ```
 
@@ -221,11 +217,9 @@ components/mcp_scheme/src/handler.rs  — ServiceHandler trait, EchoHandler, Sys
 - [ ] evolution/memory/ has round entries for each AutoResearch iteration
 - [ ] evolution/results/ has TSV tracking for conformity and performance
 
----PROMPT END---
-
 ## Notes pour la prochaine session
 
-1. Assure-toi d'être dans le bon répertoire : `cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os`
+1. Assure-toi d'être dans le bon répertoire : `cd ./`
 2. Vérifie que le Podman container existe : `ls redox_base/build/container.tag`
 3. Vérifie que l'image boot : `./harness/qemu_runner.sh redox_base/build/x86_64/acos-bare/harddrive.img`
 4. Lance : `/apex` puis colle tout le contenu entre les balises START/END

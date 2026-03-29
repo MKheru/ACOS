@@ -1,10 +1,6 @@
 # APEX Prompt — WS5: AI Supervisor (acosd)
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS5 (AI Supervisor) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS5 (AI Supervisor) for ACOS
 
 ## IMPORTANT: Naming Convention
 **This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations. The micro-kernel is an internal implementation detail. The project, the OS, the brand = **ACOS**.
@@ -263,8 +259,6 @@ The proxy needs to be updated to:
 - [ ] All existing 44 mcp_scheme tests still pass
 - [ ] Cross-compile succeeds, ACOS boots with AI service
 - [ ] mcp-query ai ask "..." works end-to-end in QEMU at reasonable speed
-
----PROMPT END---
 
 ## Notes pour la prochaine session
 

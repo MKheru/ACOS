@@ -1,10 +1,6 @@
 # APEX Prompt — WS8: Human Interface — Terminal IA Conversationnel
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS8 (Human Interface) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS8 (Human Interface) for ACOS
 
 ## IMPORTANT: Naming Convention
 **This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations. The micro-kernel is an internal implementation detail. The project, the OS, the brand = **ACOS**.
@@ -429,8 +425,6 @@ Phase A (talk handler) ──→ Phase B (REPL binary) ──→ Phase C (intell
 5. **On ACOS, stdin/stdout connect to the getty PTY** — mcp-talk runs inside Konsole 1 (User) or a dedicated Konsole 2 (Talk).
 6. **Conversation history is in-memory** — persisted via mcp:talk/history. For session persistence across reboots, write to filesystem.
 7. **The LLM proxy must be running on host** — mcp-talk → mcp:talk → mcp:ai → mcp:llm → tcp:10.0.2.2:9999 → llm-proxy.py → Gemini.
-
----PROMPT END---
 
 ## Notes pour la prochaine session
 

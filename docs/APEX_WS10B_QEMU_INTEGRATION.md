@@ -1,7 +1,6 @@
 # WS10b: ACOS-MUX QEMU Integration
 
-> Résoudre les derniers blocages pour qu'acos-mux fonctionne dans ACOS/QEMU
-> Prérequis : WS10 terminé (commit 32059ba, 1551 tests, 4 labs OK)
+Resolve blocking issues for acos-mux to run properly in ACOS via QEMU
 
 ## Contexte
 

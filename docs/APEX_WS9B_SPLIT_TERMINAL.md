@@ -1,10 +1,6 @@
 # APEX Prompt — WS9B: Split Terminal — tmux + Guardian TUI fonctionnel
 
-**Usage:** `/apex suit les instructions de /home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/architecture/APEX_WS9B_SPLIT_TERMINAL.md`
-
----PROMPT START---
-
-Implement WS9B (Split Terminal) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS9B (Split Terminal) for ACOS
 
 ## IMPORTANT: Naming Convention
 **This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations.
@@ -238,4 +234,3 @@ Phase 1 (stabilize) → Phase 2 (tmux port) → Phase 3 (integration) → Phase 
 5. **mcpd response format**: result.text contains a JSON string — double-parse it
 6. **PTY support exists**: `ptyd` registers `pty://` scheme, both Ion and fbcond use it
 
----PROMPT END---

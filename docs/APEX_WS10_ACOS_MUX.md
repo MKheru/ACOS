@@ -1,7 +1,6 @@
 # APEX WS10: ACOS-MUX — Terminal Multiplexer Port
 
-> Fork emux → ACOS-MUX via 4 AutoResearch Labs
-> Date: 2026-03-25
+Port emux → ACOS-MUX via 4 AutoResearch Labs
 
 ## Objectif
 

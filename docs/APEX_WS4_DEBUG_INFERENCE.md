@@ -1,10 +1,6 @@
 # APEX Prompt — WS4 Debug: Fix LLM Inference Output
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Debug and fix the SmolLM-135M inference output in ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Debug and fix the SmolLM-135M inference output in ACOS
 
 ## Context
 ACOS is an AI-native OS built on a Rust micro-kernel. WS4 LLM Runtime is implemented:
@@ -131,8 +127,6 @@ FOR each hypothesis (H1-H6):
 - [ ] All existing tests still pass
 - [ ] evolution/results/ has TSV tracking for each debug iteration
 - [ ] Git history shows every attempt with descriptive messages
-
----PROMPT END---
 
 ## Notes pour la session de debug
 

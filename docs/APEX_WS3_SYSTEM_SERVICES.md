@@ -1,10 +1,6 @@
 # APEX Prompt — WS3: System Services
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS3 (System Services) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS3 (System Services) for ACOS
 
 ## Context
 ACOS is an AI-native OS based on Redox OS (Rust micro-kernel). WS1 and WS2 are COMPLETE:
@@ -86,7 +82,7 @@ Since mcpd runs on Redox, these handlers can use `std::fs::read_to_string("/sche
 
 ### Cross-compilation workflow (same as WS2)
 ```bash
-cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os
+cd ./
 ./scripts/inject_mcpd.sh
 cd redox_base
 podman run --rm \
@@ -111,7 +107,7 @@ fusermount3 -u "$MOUNT_DIR"
 ```
 
 ```bash
-cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os
+cd ./
 ./harness/qemu_runner.sh redox_base/build/x86_64/acos-bare/harddrive.img 60
 ```
 
@@ -220,11 +216,9 @@ fn service_roundtrip(scheme: &mut McpScheme, service: &str, request_json: &str) 
 - [ ] evolution/memory/ has round entries for search and bench iterations
 - [ ] evolution/results/ has TSV tracking for all AutoResearch loops
 
----PROMPT END---
-
 ## Notes pour la prochaine session
 
-1. Assure-toi d'être dans le bon répertoire : `cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os`
+1. Assure-toi d'être dans le bon répertoire : `cd ./`
 2. Vérifie que les 24 tests passent : `cd components/mcp_scheme && cargo test --features host-test`
 3. Vérifie que l'image boot : `./harness/qemu_runner.sh redox_base/build/x86_64/acos-bare/harddrive.img`
 4. Lance : `/apex` puis colle tout le contenu entre les balises START/END

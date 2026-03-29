@@ -1,10 +1,6 @@
 # APEX Prompt — WS4: LLM Runtime (llmd)
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Implement WS4 (LLM Runtime) for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Implement WS4 (LLM Runtime) for ACOS
 
 ## Context
 ACOS is an AI-native OS built on a Rust micro-kernel. WS1, WS2, and WS3 are COMPLETE:
@@ -177,7 +173,7 @@ fusermount3 -u "$MOUNT_DIR"
 
 ### Build workflow
 ```bash
-cd /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os
+cd ./
 
 # 1. Develop engine in components/llm_engine/ (test on host first)
 cd components/llm_engine
@@ -323,8 +319,6 @@ First one to compile wins → move to Phase B with that engine.
 - [ ] evolution/memory/ has round entries for each AutoResearch iteration
 - [ ] evolution/results/ has TSV tracking for engine eval + model eval + optim
 - [ ] Git history shows every attempt (successes AND failures)
-
----PROMPT END---
 
 ## Notes pour la prochaine session
 

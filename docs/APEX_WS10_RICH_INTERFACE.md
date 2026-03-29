@@ -1,8 +1,6 @@
 # WS10: Rich Interface — Architecture Overview
 
-## Objectif
-
-WS10 transforme ACOS d'un OS textuel en un OS à interface riche : navigateur web intégré, interface vocale, dashboard système graphique, et personnalisation visuelle. Ces fonctionnalités ont été différées de WS8 pour se concentrer d'abord sur le terminal conversationnel.
+Transform ACOS from a text-based OS to one with rich UI: integrated web browser, voice interface, graphical system dashboard, and visual customization.
 
 ## Prérequis
 

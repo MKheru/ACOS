@@ -1,10 +1,6 @@
 # APEX Prompt — AutoResearch Loop Framework
 
-**Usage:** Copier tout le contenu entre les balises `---PROMPT START---` et `---PROMPT END---` et le coller après `/apex` dans Claude Code.
-
----PROMPT START---
-
-Build the AutoResearch autonomous iteration loop framework for ACOS at /var/home/ankheru/Documents/Projects/Karpathy_AutoResearch/projects/agent_centric_os/
+Build the AutoResearch autonomous iteration loop framework for ACOS
 
 ## IMPORTANT: Naming Convention
 **This OS is called ACOS (Agent-Centric Operating System).** Never refer to it as "Redox" in code comments, documentation, commit messages, or conversations.
@@ -461,8 +457,6 @@ For labs that need the LLM proxy (AI tool calling performance), QEMU needs `-net
 5. **Cross-compile caching:** After the first podman run, dependencies are cached. Subsequent compiles take ~5s instead of 15s. The framework should NOT clean the build cache between iterations.
 6. **Rollback granularity:** Back up only `allowed_files` from the lab config, not the entire source tree. Faster and cleaner.
 7. **run_lab.py can use Claude Code CLI:** `claude --print --dangerously-skip-permissions -p "You are an AutoResearch agent..."` to launch a headless Claude Code session. Check if `claude` CLI is available.
-
----PROMPT END---
 
 ## Notes pour la prochaine session
 

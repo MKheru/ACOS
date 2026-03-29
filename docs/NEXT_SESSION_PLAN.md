@@ -6,14 +6,7 @@ Créer le repo public `ACOS` sur GitHub (MKheru/ACOS) à partir de `projects/age
 
 ## Étape 1 : Extraire l'historique ACOS
 
-```bash
-# Depuis le repo Karpathy_AutoResearch
-git filter-repo \
-  --path projects/agent_centric_os/ \
-  --path-rename projects/agent_centric_os/:
-
-# Résultat : historique des commits ACOS uniquement, paths nettoyés
-```
+Extract ACOS history from the main repository
 
 Alternative si filter-repo ne garde pas assez d'historique :
 ```bash
