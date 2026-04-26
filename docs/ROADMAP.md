@@ -510,6 +510,182 @@ Boot → split console 50/50 vertical
 
 ---
 
+## WS11: LLM Runtime Rust-Natif — mistral.rs + Gemma 4 + Agentic Loop
+
+**Objectif :** Remplacer Ollama/phi4-mini par [mistral.rs](https://github.com/EricLBuehler/mistral.rs) (Rust-natif, MCP client intégré) avec Gemma 4 E4B (Apache 2.0, function calling entraîné nativement) comme modèle par défaut. Exposer les 19 services MCP comme **tool definitions** consommables par l'agentic loop. Préparer l'architecture `LlmBackend` pour portabilité Phase 2.
+
+**Phase A — host-side uniquement.** Le port natif Redox = WS12.
+
+### Pourquoi mistral.rs + Gemma 4
+
+| Critère | Ollama (actuel) | mistral.rs (cible) |
+|---|---|---|
+| Langage runtime | Go | **Rust** (cohérence noyau) |
+| Client MCP natif | ❌ | ✅ Process / HTTP / WebSocket |
+| Agentic loop server-side | ❌ | ✅ |
+| Tool dispatch HTTP custom | ❌ | ✅ POST vers endpoint |
+| Gemma 4 day-0 | partiel | ✅ multimodal complet |
+| Cross-compile Redox | hors scope | candidat WS12 |
+
+Gemma 4 (sortie 2 avril 2026, Apache 2.0) remplace **phi4-mini** qui n'a pas de function calling natif (vérifié au benchmark : 0% tool accuracy). Gemma 4 E4B tient en 6 GB RAM (4-bit), 128K contexte, multimodal texte+image+audio.
+
+### Tâches
+
+| # | Tâche | Complexité | Mode |
+|---|---|---|---|
+| 11.1 | ADR `LlmBackend` trait — interface abstraite (`generate`, `tool_call`, `embed`, `tokenize`), 2 impls (mistralrs, ollama fallback) | Facile | Dev |
+| 11.2 | Installer mistral.rs avec features SIMD (`mkl` ou `cuda`), valider `mistralrs doctor` | Facile | Dev |
+| 11.3 | Benchmark : tok/s + tool-call latency Gemma 4 E4B vs phi4-mini + qwen2.5 | Moyen | **AutoResearch** |
+| 11.4 | Feasibility cross-compile : `cargo check --target x86_64-unknown-redox -p mistralrs --no-default-features` — go/no-go WS12 | Moyen | Dev |
+| 11.5 | **Prérequis bloquant** — exposer `$service/tools/list` sur les 19 services mcpd (JSON MCP tool defs) | Moyen | Dev |
+| 11.6 | Refactor `net.llm_request` : route Ollama → mistralrs-server OpenAI-compat | Moyen | Dev |
+| 11.7 | mistralrs HTTP tool dispatch → endpoint mcpd `/scheme/mcp/tools/call` | Moyen | Dev |
+| 11.8 | Refactor `guardian.respond` : passage en mode agentic loop (LLM → tool call → exec MCP → response) | Moyen | Dev |
+| 11.9 | Refactor `ai.tool_call` : déléguer la boucle à mistralrs au lieu de parser manuellement | Moyen | Dev |
+| 11.10 | Strict schema mode : valider chaque tool call contre le JSON schema du service avant exécution | Moyen | Dev |
+| 11.11 | Sandbox mistralrs-server (systemd unit dédiée, user non-root, AF_UNIX socket) | Moyen | Dev |
+| 11.12 | Adopter le standard [agentskills.io](https://agentskills.io) pour les skills Guardian (portabilité agents) | Facile | Dev |
+| 11.13 | Tests QEMU : `guardian respond` utilise agentic loop sur cas réels | Dur | Dev |
+| 11.14 | Pinning strict : `mistralrs = "=X.Y.Z"`, hash SHA256 GGUF figé | Facile | Dev |
+| 11.15 | Fallback model switch : config `ACOS_LLM_MODEL=gemma-4-E4B \| qwen-3.5-4B` | Facile | Dev |
+| 11.16 | Documentation `docs/WS11_LLM_RUNTIME.md` + retrait Ollama du quickstart README | Facile | Dev |
+
+**Critère de merge :**
+- ✅ `guardian respond` utilise agentic loop sans orchestration côté Rust (LLM gère la boucle)
+- ✅ Toutes les tool calls validées par JSON schema strict avant exec
+- ✅ Tool call round-trip p95 < 500 ms (local, prompt simple)
+- ✅ Gemma 4 E4B Q4 tourne en < 8 GB RAM host
+- ✅ `LlmBackend` trait permet de swap mistralrs ↔ ollama via config
+- ✅ 19 services exposent `tools/list` au format MCP standard
+
+**Métriques cibles :**
+- Latence tool-call p95 : **< 500 ms**
+- RAM host : **< 8 GB** (Gemma 4 E4B Q4)
+- Accuracy tool selection : **> 90%** (suite 20 prompts représentatifs)
+- Throughput génération : **≥ 30 tok/s** CPU avec MKL ou **≥ 60 tok/s** CUDA
+- Couverture agentic : **19/19 services** exposent `tools/list`
+
+**Prérequis bloquants :**
+- 11.4 (cross-compile feasibility) → go/no-go pour WS12
+- 11.3 (bench favorable) → go/no-go pour WS11 lui-même
+- 11.5 (tool definitions) → bloque 11.6-11.9, **doit être fait en premier**
+
+> Voir `docs/HERMES_EVALUATION.md` pour l'évaluation comparative avec hermes-agent (NousResearch).
+
+---
+
+## WS12: LLM Runtime Redox-Native — Gemma 4 dans le noyau
+
+**Objectif :** Porter mistral.rs (CPU pur, no_std-compatible) sur la cible `x86_64-unknown-redox`. Exposer le moteur d'inférence comme service `mcp://llm` interne à mcpd, supprimant la dépendance LLM-host. Gemma 4 E2B (4 GB Q4) tourne *dans* la VM ACOS — premier pas vers la promesse "LLM as kernel".
+
+**Phase B — exploratoire, R&D, dépend de WS11.4 favorable.**
+
+### Défis identifiés
+
+1. **Pas de BLAS sur Redox** — pas de MKL, pas de OpenBLAS officiellement portés. Sans accélération SIMD, inférence CPU pure-Rust = 0.2 tok/s (vérifié au benchmark WS11). Solutions possibles :
+   - Porter OpenBLAS / BLIS sur Redox (gros effort)
+   - Écrire des kernels matmul AVX2 inline en Rust (effort moyen, gain ciblé)
+   - Attendre support CUDA Redox (jamais — trop spécialisé)
+2. **Std target maturity** — `x86_64-unknown-redox` est tier 3. Tokio, memmap, fs ABI à valider.
+3. **Memory mapping** — Gemma 4 utilise mmap pour les poids GGUF. Redox a un mmap mais pas testé sur 4-15 GB de fichiers.
+4. **GPU drivers** — pour Phase 3 hardware réel, pas de drivers GPU dans Redox. Décision : Phase B reste **CPU-only obligatoire**.
+
+### Tâches
+
+| # | Tâche | Complexité | Mode |
+|---|---|---|---|
+| 12.1 | Fork minimal mistral.rs, strip features GPU/Metal/Accelerate | Moyen | Dev |
+| 12.2 | Cross-compile workflow Podman pour `x86_64-unknown-redox` | Dur | Dev |
+| 12.3 | Patcher tokio dependencies (remplacer si syscalls non-Redox) | Dur | Dev |
+| 12.4 | Valider mmap GGUF 4 GB sur Redox | Moyen | Dev |
+| 12.5 | Kernels matmul AVX2 inline (Rust + asm!) | Très dur | **AutoResearch** |
+| 12.6 | Service `mcp://llm` natif dans mcpd (refactor du llm_handler) | Moyen | Dev |
+| 12.7 | Bench tok/s in-VM avec Gemma 4 E2B Q4 | Moyen | **AutoResearch** |
+| 12.8 | Suppression de `mcp:net` → Ollama dépendance | Facile | Dev |
+| 12.9 | RAM budget : valider VM ACOS avec 6-8 GB pour modèle + OS | Facile | Dev |
+| 12.10 | Boot test : ACOS boot avec LLM préchargé < 30s | Dur | **AutoResearch** |
+
+**Critère de merge :**
+- ✅ `mcp-query llm generate "hello"` répond en < 5s avec Gemma 4 E2B *dans* la VM, sans Ollama host
+- ✅ Tok/s ≥ 5 sur Gemma 4 E2B CPU pur dans QEMU
+- ✅ Boot ACOS + LLM ready en < 30s
+- ✅ RAM totale VM (OS + modèle + KV cache) < 8 GB
+
+**Métriques cibles :**
+- Tok/s in-VM : **≥ 5** (E2B Q4)
+- Cold start LLM : **< 30s** depuis boot
+- RAM totale : **< 8 GB** (OS ~2 GB + modèle ~4 GB + cache ~2 GB)
+- Latence inférence (10 tokens) : **< 5s**
+
+**Risques de no-go :**
+- Si WS11.4 montre que cross-compile est cassé sans patch upstream majeur → on diffère WS12 jusqu'à upstream PR
+- Si tok/s < 1 même avec kernels AVX2 → on revoit la stratégie (modèle plus petit ? quantification 2-bit ? renoncer LLM-in-kernel pour Phase 1 hardware ?)
+
+> Cette work représente la promesse fondatrice d'ACOS : "LLM as kernel". Échec acceptable, abandon non-acceptable.
+
+---
+
+## WS13: Web GUI Remote-First — Interface universelle MCP-driven
+
+**Objectif :** Construire l'interface graphique d'ACOS comme une **SPA web hébergée par mcpd**, accessible depuis n'importe quel navigateur (laptop / phone / tablette). Local et distant utilisent **le même bundle**, le même protocole MCP-over-WebSocket, les mêmes tool definitions. Phase A : remote browser → ACOS. Phase B (= WS10 reformulé) : Servo embedded rend la même SPA en local.
+
+**Pourquoi maintenant** : la GUI n'est plus un binaire compilé qu'on doit cross-compiler — c'est un **agent client** comme un autre, qui parle MCP. L'humain ↔ l'OS et l'IA ↔ l'OS passent par le **même protocole**, mêmes 19 services, même format JSON-RPC.
+
+### Architecture cible
+
+```
+[laptop / phone / TV]                  [ACOS / QEMU / hardware]
+  Browser                                  
+    └─ HTML + JS bundle                    mcpd
+       └─ HTTPS/WSS ─────────────────────► ├── mcp://gui (nouveau)
+                                           ├── 19 services existants
+                                           └── exposed via wss://acos.local/mcp
+```
+
+### Stack proposée (recommandation)
+
+| Couche | Choix | Raison |
+|---|---|---|
+| Framework UI | **SolidJS** (ou Svelte) | Bundle <50 kB, pas de VDOM, perf proche DOM natif (critique sur Servo embedded sans GPU) |
+| Build | **Vite** (dev) + bundle statique (prod) | Single HTML+JS+CSS, pas de Node runtime côté ACOS |
+| Transport | **MCP-over-WebSocket** | Spec MCP officielle, mistralrs supporte côté Rust |
+| Auth | **mTLS + token MCP** | Modèle agent-to-agent, pas de session/cookie |
+| Rendering local (Phase B) | **Servo** (déjà au plan WS10) | Cohérence Rust |
+| À éviter | React, Electron, Next.js | Lourds, supply chain massive (npm), hostiles aux contraintes OS |
+
+### Tâches
+
+| # | Tâche | Complexité | Mode |
+|---|---|---|---|
+| 13.1 | ADR architecture `mcp://gui` + scheme `acos://` (URL custom pour ressources GUI) | Facile | Dev |
+| 13.2 | Service `mcp://gui` : `tools/list`, `state`, `notify`, `dialog.show`, `panel.open`, etc. | Moyen | Dev |
+| 13.3 | HTTP/WSS server intégré à mcpd (serve bundle + WebSocket MCP transport) | Moyen | Dev |
+| 13.4 | Bootstrap SPA : SolidJS + Vite + connection WSS au serveur ACOS | Moyen | Dev |
+| 13.5 | UI : dashboard système (CPU/RAM/services), 19 services explorables, log live | Moyen | Dev |
+| 13.6 | mTLS — émission cert serveur ACOS + client (pairing) | Moyen | Dev |
+| 13.7 | Service `mcp://identity` pour pairing nouveaux clients (QR code) | Moyen | Dev |
+| 13.8 | LLM driving — Gemma 4 reçoit le state visuel sérialisé, peut appeler les tools UI | Moyen | Dev |
+| 13.9 | Offline-first : bundle 100% local (pas de CDN, pas de Google Fonts) | Facile | Dev |
+| 13.10 | Mobile-friendly responsive layout | Moyen | Dev |
+| 13.11 | Tests : pilotage de la GUI par Guardian via tool calls | Dur | **AutoResearch** |
+
+**Critère de merge :**
+- ✅ Browser laptop se connecte à `https://<acos-host>:8443/`, voit dashboard temps réel des 19 services
+- ✅ Toute action UI = appel MCP à un service mcpd (pas d'API REST custom)
+- ✅ Guardian peut envoyer une notification visible dans la GUI
+- ✅ Gemma 4 (via mistralrs) peut piloter la GUI en appelant `mcp://gui/tools/list`
+- ✅ Bundle JS+CSS+HTML < 200 kB, zéro requête externe au runtime
+
+**Métriques cibles :**
+- Bundle size : **< 200 kB** (gzipped)
+- Time to first interactive : **< 1s** sur laptop, **< 3s** sur phone
+- Latence interaction MCP (click → action) : **< 100 ms** local, **< 300 ms** remote
+- Cold start ACOS GUI server : **< 500 ms**
+
+**Position vs WS10 :** WS13 absorbe la couche "rendering web" de WS10. WS10 devient strictement "Servo embedded + voix + thèmes" — la GUI elle-même (HTML/JS/state) appartient à WS13 et est partagée entre remote et embedded.
+
+---
+
 ## Séquencement & Dépendances
 
 ```
@@ -531,9 +707,15 @@ WS8 ████████████████████████  mc
 WS9 ████████████████░░░░░░░░  AI Guardian (autonomous monitor)        ← NEXT
 WS6 ░░░░████████████░░░░░░░░  SDK + docs + tutoriels                  ⏸
 
-Trimestre 4 (Phase Rich Interface)
-══════════════════════════════════
-WS10 ████████████████████████  Servo, DOM, Voice, Dashboard, Themes
+Trimestre 4 (Phase LLM Rust-Natif + Web GUI)
+═════════════════════════════════════════════
+WS11 ████████████████████████  mistral.rs + Gemma 4 + tool definitions
+WS13 ░░░░████████████████████  Web GUI Remote-First (SolidJS + WSS)
+
+Trimestre 5+ (Phase Embedded + Hardware)
+═════════════════════════════════════════
+WS12 ░░░░░░░░░░██████████████  LLM natif Redox (mistral.rs CPU pur)
+WS10 ░░░░░░░░░░░░██████████░░  Servo embedded, voix, thèmes
 WS6  ░░░░░░░░████████████████  Plugins, benchmarks publics
 ```
 
@@ -622,9 +804,12 @@ L'OS s'améliore lui-même.
 | **v0.4 — Konsole** | Multi-console natif + Root IA + display manager | ✅ Fait (WS7) |
 | **v0.5 — Conversation** | mcp-talk terminal IA conversationnel | ✅ Fait (WS8) |
 | **v0.6 — Guardian** | AI Guardian autonome, split console, mcp-talk as shell | ← NEXT (WS9) |
-| **v0.7 — Rich Interface** | Servo browser, voice, dashboard, themes | Planned (WS10) |
-| **v0.8 — Self-Aware** | Auto-diagnostic + self-healing + multi-agents | T4 |
-| **v1.0 — First Contact** | OS complet utilisable en daily, multi-écran | T5+ |
+| **v0.7 — LLM Rust** | mistral.rs + Gemma 4 + tool definitions + agentic loop | Planned (WS11) |
+| **v0.8 — Web GUI** | Remote-first SPA, MCP-over-WSS, accessible navigateur | Planned (WS13) |
+| **v0.9 — Native LLM** | mistral.rs CPU pur dans Redox, fin dépendance Ollama | Phase 2 (WS12) |
+| **v0.10 — Rich Interface** | Servo embedded, voix, dashboard graphique, thèmes | Phase 2 (WS10) |
+| **v1.0 — First Light Hardware** | Boot bare metal, plus QEMU only | Phase 3 |
+| **v1.5 — Self-Aware** | Auto-diagnostic + self-healing + multi-agents | Phase 4 |
 
 ---
 

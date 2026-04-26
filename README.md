@@ -99,7 +99,7 @@ This design exists for a reason: if an AI can fully control an OS through a unif
 The roadmap:
 
 - **Phase 1** (current): ACOS as a virtual OS -- AI is a first-class citizen, MCP bus works, Guardian consults external LLM via Ollama.
-- **Phase 2**: Internal Guardian -- on-device AI engine embedded in ACOS, no external dependency. OpenClaw-inspired agent delegation.
+- **Phase 2**: Rust-native LLM runtime via [mistral.rs](https://github.com/EricLBuehler/mistral.rs) + [Gemma 4](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4), then internal Guardian -- on-device AI engine embedded in ACOS, no external dependency. Web GUI accessible from any device. [OpenClaw](https://github.com/openclaw/openclaw)-inspired agent delegation, with architectural patterns borrowed from [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 - **Phase 3**: Real hardware boot -- ACOS runs on bare metal, not just QEMU.
 - **Phase 4**: AI reasons about and designs hardware architectures optimized for AI workloads.
 
@@ -207,6 +207,12 @@ Build journal highlights:
 - **WS9**: Guardian autonomous monitor + LLM consultation
 - **WS10**: Terminal multiplexer
 - **Final**: Ollama integration, 19 live services, full network stack
+
+Next on the roadmap (see [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan):
+
+- **WS11 — Rust-native LLM runtime**: replace Ollama/phi4-mini with [mistral.rs](https://github.com/EricLBuehler/mistral.rs) (Rust-native, MCP client built in) and [Gemma 4](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4) E4B (Apache 2.0, native function calling). Expose all 19 MCP services as `tools/list` definitions consumable by the agentic loop. `LlmBackend` trait keeps the model swappable. Adopts the [agentskills.io](https://agentskills.io) skill format. See [`docs/HERMES_EVALUATION.md`](docs/HERMES_EVALUATION.md) for the comparative analysis with hermes-agent.
+- **WS12 — Native LLM in Redox**: cross-compile mistral.rs (CPU-only, pure Rust) to `x86_64-unknown-redox`, expose as `mcp://llm` from inside mcpd, run Gemma 4 E2B (4 GB Q4) *inside* the VM. End of host-side LLM dependency. The first concrete step toward "LLM as kernel".
+- **WS13 — Web GUI Remote-First**: build the GUI as a SolidJS SPA hosted by mcpd, accessible from any browser (laptop / phone / tablet) over MCP-over-WebSocket. Local rendering and remote rendering share the same bundle. Every UI action is an MCP call to a service, so the LLM (Gemma 4) can drive the UI through the same tool calls a human would.
 
 ## requirements
 
