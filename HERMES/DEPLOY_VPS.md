@@ -28,6 +28,11 @@ ssh kheru@100.79.73.75 'echo OK; uname -n; whoami'
 
 ## 1. Bascule AH sur le fork (sur le VPS)
 
+> ⚠️ Sur `acos-hermes-01`, **le port 22 outbound est bloqué** vers
+> github.com (firewall Hetzner / réseau Tailscale-only). On utilise
+> HTTPS (port 443, ouvert) pour cloner/fetcher. Le fork étant
+> public, aucune authentification n'est requise pour read-only.
+
 ```bash
 ssh kheru@100.79.73.75
 sudo -u hermes -i
@@ -38,8 +43,8 @@ cd /home/hermes/hermes-agent
 git rev-parse HEAD > /home/hermes/.hermes/last_upstream_sha.txt
 git remote -v  # noter l'origin actuelle
 
-# Bascule sur le fork
-git remote set-url origin git@github.com:MKheru/ACOS-HERMES.git
+# Bascule sur le fork via HTTPS (port 443 — port 22 bloqué outbound)
+git remote set-url origin https://github.com/MKheru/ACOS-HERMES.git
 git fetch origin acos-main acos-base-755a2804
 git checkout acos-main
 
@@ -53,22 +58,24 @@ git log --oneline acos-base-755a2804..HEAD
 #   <sha>  patch 4: extend write denylist for ACOS-HERMES threat model
 ```
 
-> ⚠️ Si le clone d'origin utilisait HTTPS, la bascule SSH demandera
-> les clés. Le user `hermes` doit avoir une clé SSH déployée comme
-> deploy key sur `MKheru/ACOS-HERMES` (read-only suffit). Si la clé
-> n'existe pas :
->
-> ```bash
-> # côté hermes user
-> ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_acos_hermes -N ""
-> cat ~/.ssh/id_ed25519_acos_hermes.pub
-> # Copier la clé pub, l'ajouter sur github.com/MKheru/ACOS-HERMES
-> # → Settings → Deploy keys → Add deploy key (read-only)
-> # Puis dans ~/.ssh/config :
-> #   Host github.com
-> #     IdentityFile ~/.ssh/id_ed25519_acos_hermes
-> #     IdentitiesOnly yes
-> ```
+### Optionnel — SSH via port 443
+
+Si tu veux push depuis le VPS plus tard (workflow expérimental), tu
+peux utiliser SSH sur 443 (GitHub supporte `ssh.github.com:443`) :
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  Hostname ssh.github.com
+  Port 443
+  User git
+EOF
+chmod 600 ~/.ssh/config
+ssh -T git@github.com   # test, attendre "Hi MKheru!"
+git remote set-url origin git@github.com:MKheru/ACOS-HERMES.git
+```
+
+Sinon HTTPS suffit pour read-only (clone, fetch, pull).
 
 ## 2. Réinstaller les dépendances
 
