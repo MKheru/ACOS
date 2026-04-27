@@ -96,9 +96,41 @@ def call_gemini_cli(prompt: str, cwd: str, timeout: int = 300) -> str:
         raise RuntimeError(
             f"gemini exit={proc.returncode}: {proc.stderr[:600]}"
         )
-    out = proc.stdout
-    # Gemini CLI sometimes prefixes warnings — strip to first markdown/code block.
-    return out
+    return proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Model pools — multi-vendor diversity for the adversarial triad.
+# A round picks (gen_model, adv_model) from these pools with the constraint
+# that they cannot be the same model. The sentinel "gemini-cli" routes to
+# the local Gemini CLI binary (free OAuth quota); everything else is an
+# OpenRouter slug. Verified available 2026-04-27.
+# ---------------------------------------------------------------------------
+
+GEN_POOL = (
+    "qwen/qwen3-coder-plus",
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5",
+    "mistralai/codestral-2508",
+    "z-ai/glm-4.7",
+)
+
+ADV_POOL = (
+    "gemini-cli",            # local Gemini CLI — free, creative
+    "qwen/qwen3-coder-plus",
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5",
+    "z-ai/glm-4.7",
+    "mistralai/codestral-2508",
+)
+
+
+def call_model(model: str, prompt: str, cwd: str,
+               max_tokens: int = 8000) -> str:
+    """Dispatch to the right backend based on model slug."""
+    if model == "gemini-cli":
+        return call_gemini_cli(prompt, cwd=cwd)
+    return call_openrouter(prompt, model=model, max_tokens=max_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +341,7 @@ Output ONLY the JSON below. No prose, no markdown, no commentary.
 # ---------------------------------------------------------------------------
 
 def run_generator_or_adversary(role: str, task: dict, current_code: str,
-                               baseline: dict, gen_model: str,
+                               baseline: dict, model: str,
                                cwd: str) -> str:
     fmt = {
         "task_title": task["title"],
@@ -323,12 +355,8 @@ def run_generator_or_adversary(role: str, task: dict, current_code: str,
         "false_positives": json.dumps(baseline.get("false_positive_ids", [])),
         "current_code": current_code,
     }
-    if role == "gen":
-        prompt = GEN_PROMPT.format(**fmt)
-        out = call_openrouter(prompt, model=gen_model, max_tokens=8000)
-    else:
-        prompt = ADV_PROMPT.format(**fmt)
-        out = call_gemini_cli(prompt, cwd=cwd)
+    prompt = (GEN_PROMPT if role == "gen" else ADV_PROMPT).format(**fmt)
+    out = call_model(model, prompt, cwd=cwd, max_tokens=8000)
     return extract_python_code(out)
 
 
@@ -374,14 +402,23 @@ def main() -> int:
                    help="path to ACOS-HERMES checkout (provides agent/* and venv)")
     p.add_argument("--harness", default=None, type=Path)
     p.add_argument("--corpus", default=None, type=Path)
-    # Generator: code-capable, non-reasoning model (MiniMax M2.7 wastes
-    # most max_tokens on chain-of-thought and truncates mid-code).
-    p.add_argument("--gen-model", default="qwen/qwen3-coder-plus")
+    # When --gen-model / --adv-model are unset, the orchestrator picks
+    # one model per round at random from GEN_POOL / ADV_POOL, with the
+    # constraint that they cannot be the same model in a given round.
+    p.add_argument("--gen-model", default=None,
+                   help="single model for Generator (else random from GEN_POOL)")
+    p.add_argument("--adv-model", default=None,
+                   help="single model for Adversary (else random from ADV_POOL)")
     p.add_argument("--eval-model", default="deepseek/deepseek-v4-pro")
+    p.add_argument("--seed", type=int, default=None,
+                   help="seed for model pool rotation (reproducible runs)")
     p.add_argument("--max-rounds", type=int, default=3)
     p.add_argument("--limit-tasks", type=int, default=0,
                    help="if >0, run only the first N pending tasks")
     args = p.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
 
     lab = args.lab_dir
     harness = args.harness or (lab / "run_lab.py")
@@ -436,16 +473,28 @@ def main() -> int:
                                               args.repo, python)
             current_score = composite(current_metrics)
 
-            def run_one(role: str, label: str, model: str | None):
+            # Per-round model selection from the pool (or fixed via flag).
+            if args.gen_model:
+                gen_model = args.gen_model
+            else:
+                gen_model = random.choice(GEN_POOL)
+            if args.adv_model:
+                adv_model = args.adv_model
+            else:
+                adv_pool_filtered = [m for m in ADV_POOL if m != gen_model]
+                adv_model = random.choice(adv_pool_filtered)
+
+            def run_one(role: str, model: str):
                 """Run Generator or Adversary, validate, score. Returns
                 (metrics_or_None, score, code, error_str)."""
                 cand_path = (candidates_dir
                              / f"task{task['id']}_r{round_n}_{role}.py")
-                print(f"  [{role}] {label} → ...", flush=True)
+                short = model.split("/")[-1] if "/" in model else model
+                print(f"  [{role}] {short} → ...", flush=True)
                 try:
                     code = run_generator_or_adversary(
                         role, task, current_code, baseline_metrics,
-                        model or args.gen_model, str(lab))
+                        model, str(lab))
                 except Exception as e:
                     err = f"{type(e).__name__}: {str(e)[:200]}"
                     print(f"  [{role}] LLM call FAILED: {err}", flush=True)
@@ -467,10 +516,8 @@ def main() -> int:
                       f"p99={metrics['latency_p99_us']}us)", flush=True)
                 return metrics, score, code, ""
 
-            gen_metrics, gen_score, gen_code, gen_err = run_one(
-                "gen", "Qwen3-Coder", args.gen_model)
-            adv_metrics, adv_score, adv_code, adv_err = run_one(
-                "adv", "Gemini CLI", None)
+            gen_metrics, gen_score, gen_code, gen_err = run_one("gen", gen_model)
+            adv_metrics, adv_score, adv_code, adv_err = run_one("adv", adv_model)
             gen_path = candidates_dir / f"task{task['id']}_r{round_n}_gen.py"
             adv_path = candidates_dir / f"task{task['id']}_r{round_n}_adv.py"
 
@@ -520,6 +567,9 @@ def main() -> int:
                 f.write(json.dumps({
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "task_id": task["id"], "round": round_n,
+                    "gen_model": gen_model,
+                    "adv_model": adv_model,
+                    "eval_model": args.eval_model,
                     "gen_score": round(gen_score, 4),
                     "adv_score": round(adv_score, 4),
                     "verdict_winner": verdict.get("winner"),
