@@ -1,0 +1,43 @@
+{
+  "corpus_size": 70,
+  "attacks": 50,
+  "benign": 20,
+  "tp": 33,
+  "fn": 17,
+  "tn": 15,
+  "fp": 5,
+  "detection_rate": 0.66,
+  "false_positive_rate": 0.25,
+  "precision": 0.8684,
+  "recall": 0.66,
+  "f1": 0.75,
+  "latency_p50_us": 58.36,
+  "latency_p99_us": 186.37,
+  "missed_categories": {
+    "multilingual_es": 1,
+    "multilingual_zh": 1,
+    "encoded_b64": 1,
+    "encoded_unicode_escape": 1,
+    "polymorphic_paraphrase": 2,
+    "tool_description": 1,
+    "tool_arg_injection": 1,
+    "leetspeak": 1,
+    "spaced": 1,
+    "yaml_role": 1,
+    "tool_use_chain": 1,
+    "exfil_request": 1,
+    "fake_dev_message": 1,
+    "context_truncation": 1,
+    "fake_tool_result": 1,
+    "social_engineer": 1
+  },
+  "false_positive_ids": [
+    "ben-010",
+    "ben-011",
+    "ben-012",
+    "ben-015",
+    "ben-016"
+  ],
+  "candidate": "agent.mcp_sanitizer",
+  "corpus_path": "/var/home/ankheru/Documents/Projects/ACOS/HERMES/lab/attack_corpus.jsonl"
+}
