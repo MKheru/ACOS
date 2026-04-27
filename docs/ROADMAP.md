@@ -448,6 +448,7 @@ Boot → split console 50/50 vertical
 - **Anomaly Detection Engine** — 5 détecteurs : ProcessCrash, MemoryThreshold, LogErrors, FileChanges, ServiceDown
 - **Interactive Prompt System** — Prompts de choix (fix/ignore/instruct) envoyés à la console utilisateur
 - **Boot Integration** — Split console natif, mcp-talk comme shell par défaut
+- **`mcp:metrics`** — Service CPU/RAM temps réel (WS14, dépendance directe pour les seuils MemoryThreshold)
 
 ### Tâches
 
@@ -686,6 +687,53 @@ Gemma 4 (sortie 2 avril 2026, Apache 2.0) remplace **phi4-mini** qui n'a pas de 
 
 ---
 
+## WS14: Metrics Service — CPU% et RAM Temps Réel
+
+**Objectif :** Ajouter un service `mcp:metrics` dans mcpd qui expose CPU% (usage CPU global via sampling des processus) et RAM (used/total/free) en temps réel, interrogable via `mcp-query` depuis ion.
+
+### Pourquoi un service Metrics
+
+WS3 fournit `system/info` (hostname, uptime), `system/processes` (liste) et `system/memory` (RAM statique au boot). `mcp:metrics` est complémentaire — il expose CPU% et RAM **en temps réel** avec cache TTL 5s, consolidées dans un seul service pour Guardian et les agents IA. `mcp:memory` (WS3.3) = snapshot statique au boot ; `mcp:metrics/ram` = mise à jour temps réel via `/scheme/sys/meminfo`. Les deux co-existent.
+
+### Cache TTL 5s
+
+Lecture directe de `/scheme/sys/context` (CPU) et `/scheme/sys/meminfo` (RAM) a un coût (~50-100μs cumulés). Un cache TTL avec `Arc<Mutex<CacheEntry>>` (5s) amortit ce coût pour les appels rapprochés — Guardian polling toutes les 30s est unaffected.
+
+### Tâches
+
+| # | Tâche | Complexité | Mode |
+|---|---|---|---|
+| 14.1 | `MetricsHandler` — structure + methods `snapshot`, `history`, `reset` | Facile | Dev |
+| 14.2 | Lecture CPU% — lire `/scheme/sys/context` (colonne TIME par processus), calculer Δtime/Δwall entre deux snapshots. Limitation : kernel Redox n'expose pas de stats CPU globales (idle, iowait). Pour CPU% global précis, prérequis : patch kernel WS14.0 pour exposer `/scheme/sys/cpu_stat`. En attendant : somme des ΔTIME visibles / wall_time = approximation (rate limit pour Guardian足够了) | Moyen | Dev |
+| 14.3 | Lecture RAM — lire `/scheme/sys/meminfo` (prefered) ou estimer via `/scheme/sys/context` — ne duplique pas system/memory, utilise les mêmes sources | Facile | Dev |
+| 14.4 | Cache TTL 5s — `Arc<Mutex<Option<CacheEntry>>>` avec `Instant` interne. `Option` permet invalidate/reload sans re-create the cell. Check TTL sur chaque accès snapshot(), reload si expiré | Moyen | Dev |
+| 14.5 | `metrics snapshot` — retourne `{cpu_percent: f32, ram_used: u64, ram_total: u64, ram_free: u64, timestamp_us: u64}` | Facile | Dev |
+| 14.6 | `metrics history` — ring buffer 60 snapshots (échantillonnage configurable, default 1/min). **Indépendant du cache TTL 5s** — history a son propre sampler qui ne passe PAS par `snapshot()` pour éviter les cache miss garantis. Le cache 5s sert uniquement aux appels rapprochés type Guardian polling toutes les 30s | Moyen | Dev |
+| 14.7 | Tests : `mcp-query metrics snapshot` → JSON vérifiable, latence mesurée | Facile | Dev |
+
+### Critère de merge
+
+- ✅ `mcp-query metrics snapshot` retourne `{cpu_percent, ram_used, ram_total, ram_free, timestamp_us}` — tous non-nuls
+- ✅ Latence round-trip mesurée **< 10 μs** (cache hit, même machine de ref WS3)
+- ✅ Cache TTL 5s valide — appels < 5s apart ne re-parsent pas les schemes kernel
+- ✅ Tests passent dans QEMU boot, `mcp list` affiche `metrics`
+- ✅ **Hooks d'abonnement exposés** pour que WS9 Guardian puisse se brancher (`metrics/subscribe(Callback, thresholds)` côté metrics, intégration Guardian = WS9.X future)
+
+### Métriques cibles
+
+- Latence cache hit : **< 10 μs**
+- Latence cache miss (première lecture) : **< 100 μs** (parse schemes kernel)
+- RAM overhead : **< 20 KB** (ring buffer 60 × 64 bytes + cache metadata)
+- CPU% accuracy : **± 5%** vs comptage ticks
+- History depth : **60 snapshots** (ring buffer circulaire)
+
+### Prérequis bloquants
+
+- WS3 (`system/info`, `system/processes`, `system/memory`) merged et boot-validé — on réutilise les mêmes lectures de schemes kernel
+- **WS14.0 (hors scope si kernel patch necessaire)** — Si CPU% global précis requis (vs approximation via ΔTIME visibles) : patch kernel Redox pour exposer `/scheme/sys/cpu_stat` avec champs {idle_ticks, total_ticks}. Sans ce patch, approximation somme(ΔTIME)/wall_time suffit pour seuils Guardian
+
+---
+
 ## Séquencement & Dépendances
 
 ```
@@ -705,6 +753,7 @@ Trimestre 3 (Phase Human Interface) — EN COURS
 ═══════════════════════════════════════════════
 WS8 ████████████████████████  mcp-talk (300 tests, QEMU validé)       ✅
 WS9 ████████████████░░░░░░░░  AI Guardian (autonomous monitor)        ← NEXT
+WS14 █░░░░░░░░░░░░░░░░░░░░░░░  mcp:metrics (CPU/RAM temps réel)         ← avec WS9
 WS6 ░░░░████████████░░░░░░░░  SDK + docs + tutoriels                  ⏸
 
 Trimestre 4 (Phase LLM Rust-Natif + Web GUI)
@@ -803,7 +852,7 @@ L'OS s'améliore lui-même.
 | **v0.3 — Intelligence** | LLM runtime + AI supervisor + function calling | ✅ Fait (WS4-WS5) |
 | **v0.4 — Konsole** | Multi-console natif + Root IA + display manager | ✅ Fait (WS7) |
 | **v0.5 — Conversation** | mcp-talk terminal IA conversationnel | ✅ Fait (WS8) |
-| **v0.6 — Guardian** | AI Guardian autonome, split console, mcp-talk as shell | ← NEXT (WS9) |
+| **v0.6 — Guardian + Metrics** | AI Guardian autonome, split console, mcp:metrics (CPU/RAM temps réel) | ← NEXT (WS9 + WS14) |
 | **v0.7 — LLM Rust** | mistral.rs + Gemma 4 + tool definitions + agentic loop | Planned (WS11) |
 | **v0.8 — Web GUI** | Remote-first SPA, MCP-over-WSS, accessible navigateur | Planned (WS13) |
 | **v0.9 — Native LLM** | mistral.rs CPU pur dans Redox, fin dépendance Ollama | Phase 2 (WS12) |
