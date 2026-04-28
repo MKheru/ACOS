@@ -42,17 +42,27 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 def call_openrouter(prompt: str, model: str, max_tokens: int = 8000,
-                    temperature: float = 0.7) -> str:
-    """Synchronous OpenRouter chat completion. Returns assistant content."""
+                    temperature: float = 0.7,
+                    json_mode: bool = False) -> str:
+    """Synchronous OpenRouter chat completion. Returns assistant content.
+
+    json_mode=True sets response_format to json_object for stricter
+    structured output — useful for the Evaluator role (Run #1 saw
+    DeepSeek produce prose 8 of 11 rounds, falling back to numeric
+    promotion only).
+    """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not set in environment")
-    body = json.dumps({
+    payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": temperature,
-    }).encode("utf-8")
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=body,
@@ -107,21 +117,27 @@ def call_gemini_cli(prompt: str, cwd: str, timeout: int = 300) -> str:
 # OpenRouter slug. Verified available 2026-04-27.
 # ---------------------------------------------------------------------------
 
+# Run #2 pool — keeps proven winners (glm-4.7, codestral-2508,
+# qwen3-coder-plus) and adds latest versions to test (glm-5.1,
+# qwen3-coder-next). Drops models that systematically regressed in
+# Run #1: gemini-cli (over-engineered radical alternatives that added
+# FPs), glm-5 base (produced crash-on-import code), minimax-m2.7
+# (reasoning model truncates mid-code).
 GEN_POOL = (
-    "qwen/qwen3-coder-plus",
-    "deepseek/deepseek-v4-pro",
-    "z-ai/glm-5",
-    "mistralai/codestral-2508",
-    "z-ai/glm-4.7",
+    "z-ai/glm-4.7",          # 2 promotions in run #1
+    "z-ai/glm-5.1",          # latest GLM, untested
+    "mistralai/codestral-2508",  # 2 promotions in run #1
+    "qwen/qwen3-coder-plus",  # 1 promotion in run #1
+    "qwen/qwen3-coder-next", # latest Qwen coder, untested
 )
 
 ADV_POOL = (
-    "gemini-cli",            # local Gemini CLI — free, creative
-    "qwen/qwen3-coder-plus",
-    "deepseek/deepseek-v4-pro",
-    "z-ai/glm-5",
     "z-ai/glm-4.7",
+    "z-ai/glm-5.1",
     "mistralai/codestral-2508",
+    "qwen/qwen3-coder-plus",
+    "qwen/qwen3-coder-next",
+    "deepseek/deepseek-v4-pro",  # analytical adversary, JSON-strong
 )
 
 
@@ -382,8 +398,10 @@ def run_evaluator(task: dict, alpha_metrics: dict | None,
         "beta_approach": beta_code[:800],
     }
     prompt = EVAL_PROMPT.format(**fmt)
-    out = call_openrouter(prompt, model=eval_model, max_tokens=600,
-                          temperature=0.2)
+    # json_mode forces structured output — Run #1 saw DeepSeek produce
+    # prose 8/11 rounds, defeating the verdict signal.
+    out = call_openrouter(prompt, model=eval_model, max_tokens=800,
+                          temperature=0.1, json_mode=True)
     match = re.search(r"\{[\s\S]*\}", out)
     if not match:
         return {"winner": "neither",
