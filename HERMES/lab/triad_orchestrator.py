@@ -238,20 +238,26 @@ def composite(metrics: dict | None) -> float:
 # Prompts
 # ---------------------------------------------------------------------------
 
-GEN_PROMPT = """You are the GENERATOR in an adversarial triad. Implement ONE focused, INCREMENTAL refinement to a Python module that detects MCP prompt injection in tool outputs.
+_DEFAULT_LAB_CONTEXT = """The lab evaluates Python modules that defend a host LLM agent against prompt-injection attacks delivered via MCP tool outputs.
 
-## Context (lab)
-Module signature (exact): sanitize_mcp_output(text: str, server_name: str = "x") -> str
+Module signature: sanitize_mcp_output(text: str, server_name: str = "x") -> str
 Optional companion: sanitize_mcp_structured(value, server_name: str = "x")
-The module is scored against a fixed corpus of 50 attacks + 20 benign items.
-The corpus uses regex-detectable injection (override / disregard / forget instructions, fake system tags, exec command, deception, role brackets, HTML-comment-borne, invisible Unicode), plus paraphrases, multilingual (FR/ES/ZH), encoded (b64, unicode-escape), leetspeak, spaced letters, tool-surface injection, social engineering, fake context boundaries.
+Scored on a fixed corpus of attacks + benign items. The contract: return the original text on benign content, return a wrapped/modified text on detected injection. Stdlib only.
+"""
+
+
+GEN_PROMPT = """You are the GENERATOR in an adversarial triad. Implement ONE focused, INCREMENTAL refinement aligned with the task title.
+
+## Lab context
+{lab_context}
 
 ## Task for THIS round
 Title: {task_title}
 Description: {task_description}
 Hypothesis: {task_hypothesis}
+Target files: {target_files}
 
-## Current baseline (the code below) — score to beat
+## Current baseline — score to beat
 detection_rate = {detection}
 false_positive_rate = {fpr}
 composite_score = {composite_score:.4f} (higher is better; = detection - 2*fpr - latency_penalty)
@@ -259,59 +265,47 @@ p99_latency_us = {p99}
 Missed-attack categories: {missed_categories}
 False-positive item ids: {false_positives}
 
-## Current sanitiser code
+## Current code
 ```python
 {current_code}
 ```
 
 ## Your mandate
-Take ONE focused, INCREMENTAL refinement aligned with the task title. Add a new pattern, refine an existing regex, fix a known FP. Be conservative — composite penalises FPR at 2x.
+Take ONE focused, INCREMENTAL refinement aligned with the task title. Be conservative — composite penalises FPR at 2x.
 
 ## Output format (STRICT)
-Return EXACTLY one Python file. Wrap the FULL final module in a single ```python ... ``` fenced block. The orchestrator extracts the largest fenced block. The module must:
-- expose sanitize_mcp_output(text, server_name="x") -> str
-- depend only on Python stdlib
-- preserve the contract: return original text on benign content, return modified text on detected injection
-- be self-contained (no imports from agent.* — copy any helpers inline)
+Return EXACTLY one Python file. Wrap the FULL final module in a single ```python ... ``` fenced block. The orchestrator extracts the largest fenced block.
+- Preserve the public API of the current code (same exported names, same function signatures).
+- Use only Python stdlib. No pip dependencies.
+- Self-contained — copy any helpers inline; no imports from project-internal modules.
 """
 
 
 ADV_PROMPT = """You are the ADVERSARY in an adversarial triad. Implement a FUNDAMENTALLY DIFFERENT approach to the same task. The Generator is taking the obvious incremental path — your job is to find a non-obvious-but-superior alternative.
 
-## Context (lab)
-Module signature (exact): sanitize_mcp_output(text: str, server_name: str = "x") -> str
-Scored against 50 attacks + 20 benign items, composite = detection - 2*fpr - latency_penalty.
+## Lab context
+{lab_context}
 
 ## Task
 Title: {task_title}
 Description: {task_description}
+Target files: {target_files}
 
 ## Current baseline
 detection={detection}, fpr={fpr}, composite={composite_score:.4f}, p99_latency_us={p99}
 Missed categories: {missed_categories}
 False-positive ids: {false_positives}
 
-## Current sanitiser code
+## Current code
 ```python
 {current_code}
 ```
 
 ## Your mandate — BE RADICAL
-Pick ONE of these orthogonal strategies (or invent a better one):
-- **Normalisation pre-pass**: lowercase, strip whitespace, decode base64/url-percent, transliterate leetspeak → digits-to-letters, then run an existing scanner. Catches encoded/spaced/leetspeak.
-- **Structural detection**: parse HTML / JSON / YAML and reject role-claiming structures, not just text patterns.
-- **Embedding similarity** (stdlib-friendly): hand-rolled bag-of-words against an attack-centroid built from baseline misses.
-- **Two-pass scoring with token-stream features**: count instruction verbs, role claims, imperative density, encoded-content ratio.
-- **Multilingual**: add FR/ES/ZH verb tables (ignorer/desconsiderar/忽略) and trigger-noun tables.
-- **Allowlist-aware**: detect documentation/code-comment context to suppress FPs on meta-security writeups.
-
-Whichever you pick, MUST differ fundamentally from "add another regex". Justify the divergence in a brief comment at top of the module.
+Look at the task and the missed categories above and propose an architecturally distinct solution: a different abstraction, a structural rule rather than a content rule, a different data flow, a constraint at a different boundary. Whichever you pick, MUST differ fundamentally from "tweak the existing patterns". Justify the divergence in a brief comment at the top of the module.
 
 ## Output format (STRICT)
-Wrap the FULL final module in ONE ```python ... ``` fenced block. The module:
-- exposes sanitize_mcp_output(text, server_name="x") -> str
-- uses only Python stdlib (no pip)
-- self-contained
+Wrap the FULL final module in ONE ```python ... ``` fenced block. Same API as current code, stdlib only, self-contained.
 """
 
 
@@ -358,11 +352,14 @@ Output ONLY the JSON below. No prose, no markdown, no commentary.
 
 def run_generator_or_adversary(role: str, task: dict, current_code: str,
                                baseline: dict, model: str,
-                               cwd: str) -> str:
+                               cwd: str,
+                               lab_context: str = _DEFAULT_LAB_CONTEXT) -> str:
     fmt = {
+        "lab_context": lab_context.strip(),
         "task_title": task["title"],
         "task_description": task["description"],
         "task_hypothesis": task.get("hypothesis", ""),
+        "target_files": ", ".join(task.get("target_files", []) or ["(unspecified)"]),
         "detection": baseline.get("detection_rate"),
         "fpr": baseline.get("false_positive_rate"),
         "composite_score": composite(baseline),
@@ -430,6 +427,14 @@ def main() -> int:
     p.add_argument("--eval-model", default="deepseek/deepseek-v4-pro")
     p.add_argument("--seed", type=int, default=None,
                    help="seed for model pool rotation (reproducible runs)")
+    p.add_argument("--lab-context", type=Path, default=None,
+                   help="path to a markdown file with lab context (signature, "
+                        "scoring contract, constraints) injected into gen/adv "
+                        "prompts. Defaults to the SMCP regex-sanitiser context.")
+    p.add_argument("--baseline-module", type=Path, default=None,
+                   help="path to a baseline module to seed candidates/current.py "
+                        "when it is absent. Defaults to "
+                        "<repo>/agent/mcp_sanitizer.py.")
     p.add_argument("--max-rounds", type=int, default=3)
     p.add_argument("--limit-tasks", type=int, default=0,
                    help="if >0, run only the first N pending tasks")
@@ -451,10 +456,18 @@ def main() -> int:
     tasks_path = lab / "tasks.json"
     state = json.loads(tasks_path.read_text())
 
-    # Seed candidates/current.py with the patch-1 baseline if absent.
+    # Load lab context (defaults to SMCP regex-sanitiser context).
+    lab_context = _DEFAULT_LAB_CONTEXT
+    if args.lab_context and args.lab_context.exists():
+        lab_context = args.lab_context.read_text(encoding="utf-8")
+
+    # Seed candidates/current.py from the chosen baseline if absent.
     current_path = candidates_dir / "current.py"
     if not current_path.exists():
-        shutil.copy(args.repo / "agent" / "mcp_sanitizer.py", current_path)
+        baseline_src = args.baseline_module or (
+            args.repo / "agent" / "mcp_sanitizer.py"
+        )
+        shutil.copy(baseline_src, current_path)
 
     baseline_metrics = score_candidate(current_path, harness, corpus,
                                        args.repo, python)
@@ -512,7 +525,7 @@ def main() -> int:
                 try:
                     code = run_generator_or_adversary(
                         role, task, current_code, baseline_metrics,
-                        model, str(lab))
+                        model, str(lab), lab_context=lab_context)
                 except Exception as e:
                     err = f"{type(e).__name__}: {str(e)[:200]}"
                     print(f"  [{role}] LLM call FAILED: {err}", flush=True)
