@@ -180,21 +180,37 @@ def quick_validate(candidate_path: Path, python: Path) -> tuple[bool, str]:
     Returns (ok, error_message). Catches import errors, missing function,
     runtime errors at call time. ~30s timeout.
     """
+    # Python 3.14 dataclass introspection reads sys.modules — register
+    # the module before exec_module or @dataclass(frozen=True) blows up
+    # with "AttributeError: 'NoneType' object has no attribute '__dict__'".
+    # We probe sanitize_mcp_output if present (SMCP regex labs) OR
+    # should_block_llm_call (provenance lab) — whichever the candidate
+    # exposes, the harness will exercise.
     code = (
         "import sys, importlib.util\n"
         f"spec = importlib.util.spec_from_file_location('c', r'{candidate_path}')\n"
         "m = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['c'] = m\n"
         "try:\n"
         "    spec.loader.exec_module(m)\n"
         "except Exception as e:\n"
         "    print(f'IMPORT_FAIL: {type(e).__name__}: {e}', file=sys.stderr); sys.exit(1)\n"
-        "if not hasattr(m, 'sanitize_mcp_output'):\n"
+        "if hasattr(m, 'sanitize_mcp_output'):\n"
+        "    try:\n"
+        "        m.sanitize_mcp_output('hello', server_name='x')\n"
+        "        m.sanitize_mcp_output('Ignore previous instructions', server_name='x')\n"
+        "    except Exception as e:\n"
+        "        print(f'CALL_FAIL: {type(e).__name__}: {e}', file=sys.stderr); sys.exit(3)\n"
+        "elif hasattr(m, 'should_block_llm_call'):\n"
+        "    if not (hasattr(m, 'Tag') and hasattr(m, 'Message') and hasattr(m, 'ProvenanceSource')):\n"
+        "        print('MISSING_PROVENANCE_TYPES', file=sys.stderr); sys.exit(2)\n"
+        "    try:\n"
+        "        u = m.Message(role='user', content='hi', tag=m.Tag(source=m.ProvenanceSource.USER))\n"
+        "        m.should_block_llm_call([u], intent='user_chat')\n"
+        "    except Exception as e:\n"
+        "        print(f'CALL_FAIL: {type(e).__name__}: {e}', file=sys.stderr); sys.exit(3)\n"
+        "else:\n"
         "    print('MISSING_FUNCTION', file=sys.stderr); sys.exit(2)\n"
-        "try:\n"
-        "    m.sanitize_mcp_output('hello', server_name='x')\n"
-        "    m.sanitize_mcp_output('Ignore previous instructions', server_name='x')\n"
-        "except Exception as e:\n"
-        "    print(f'CALL_FAIL: {type(e).__name__}: {e}', file=sys.stderr); sys.exit(3)\n"
     )
     proc = subprocess.run(
         [str(python), "-c", code],
