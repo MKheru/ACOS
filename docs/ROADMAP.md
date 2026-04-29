@@ -734,52 +734,6 @@ Lecture directe de `/scheme/sys/context` (CPU) et `/scheme/sys/meminfo` (RAM) a 
 
 ---
 
-## WS16: Transcription vocale locale — whisper.cpp dans AH
-
-**Objectif :** Ajouter whisper.cpp au pipeline AH pour transcrire les fichiers audio (messages vocaux Discord `.ogg`) en texte, sans coût API externe ni dépendance cloud. Le texte transcrit alimente le traitement de message standard AH.
-
-**Pourquoi local** : Kheru veut pouvoir envoyer des vocaux depuis Discord/Telegram/WhatsApp. L'option cloud (OpenAI Whisper API) a un coût minime mais introduce une dependency externe. whisper.cpp avec le modèle `small` (~488MB) donne une accuracy suffisante pour du vocal informel en français.
-
-### Pourquoi whisper.cpp
-
-- 100% local, aucun token API
-- Binaire unique pré-compilé, pas de compilation (release `main` x86_64)
-- Support OGG/Opus natif sur Linux (libogg-dev compilée statiquement ou linking)
-- Modèle `small` : 488MB, accuracy correcte pour français~3x temps réel sur CPU 4 cores
-
-### Tâches
-
-| # | Tâche | Complexité | Mode |
-|---|---|---|---|
-| 16.1 | Télécharger le binaire whisper.cpp (`main`) depuis les releases GitHub `ggml-org/whisper.cpp` | Facile | Dev |
-| 16.2 | Télécharger le modèle `ggml-small.bin` (488MB) — meilleur accuracy/français que `base` | Facile | Dev |
-| 16.3 | Vérifier que `./main -m models/ggml-small.bin -f audio.ogg` fonctionne — tester OGG Opus directement. Si échec (`Audio file is not single audio track`) → convertir avec ffmpeg | Moyen | Dev |
-| 16.4 | Installer `ffmpeg` via apt (binaire externe, pas modif systemic AH) — **autorisé par Kheru** | Facile | Dev |
-| 16.5 | Créer `~/whisper.cpp/transcribe.sh` — wrapper bash : `./main -m models/ggml-small.bin -f "$1"` → output texte | Facile | Dev |
-| 16.6 | Intégrer dans le Discord adapter — hook `attachment.ogg` → download → transcribe → prepend au text_content du message | Moyen | Dev |
-| 16.7 | Fallback propre : si transcription échoue, le message est rejeté avec une réponse "je ne peux pas traiter les messages vocaux pour le moment" | Facile | Dev |
-| 16.8 | Test : envoyer un vocal Discord (≤60s) → vérifier que AH répond au contenu transcrit | Moyen | Dev |
-
-### Critère de merge
-
-- ✅ Vocal Discord (≤60s) → transcription texto en < 15s sur 4 cores
-- ✅ Le texte transcrit est traité comme message entrant AH
-- ✅ Si whisper.cpp non installé : réponse cohérente (pas de crash, pas de traceback)
-- ✅ Le binaire + modèle pèse < 600MB sur disque
-
-### Métriques cibles
-
-- Latence transcription : **< 15s** pour un vocal de 60s (temps réel ~2-3x avec small model)
-- Mémoire RAM : **< 800MB**峰值 pendant inférence
-- Disk : **< 600MB** (binaire ~10MB + small model 488MB + overhead)
-- Accuracy : suffisante pour vocal informel (test manuel uniquement)
-
-### Prérequis bloquants
-
-- **WS16.4** (ffmpeg) : installé et validé par Kheru — nécessaire pour conversion OGG→WAV si échec 16.3
-
----
-
 ## Séquencement & Dépendances
 
 ```
