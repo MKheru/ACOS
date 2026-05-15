@@ -1,5 +1,7 @@
 //! MCP message router — dispatches requests to registered service handlers
 
+use std::cell::RefCell;
+
 use acos_authority_types::{CallerContext, Verdict};
 use mcpd_authority_shim::CapabilityPolicy;
 use rustc_hash::FxHashMap;
@@ -7,6 +9,56 @@ use rustc_hash::FxHashMap;
 use crate::handler::{HandlerPolicy, ServiceHandler};
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, DENIED_BY_POLICY, METHOD_NOT_FOUND};
 use crate::McpPath;
+
+// ---------------------------------------------------------------------------
+// WS2.M3 phase 3 — caller propagation across internal (DispatchHub) calls.
+//
+// When a handler invokes another service through `DispatchHub`, the
+// originating caller's identity must travel with the call: a method
+// declared `RequiresCapability` would otherwise be unreachable from any
+// internal dispatcher (which has no caller of its own). The router
+// installs the caller in a thread-local before invoking the handler;
+// `DispatchHub::dispatch` reads it and forwards it into the nested
+// `route_with_caller` call.
+//
+// A RAII guard restores the previous value on Drop, so nested
+// invocations (A → B → C) save/restore correctly even across panics.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static CURRENT_CALLER: RefCell<Option<CallerContext>> = const { RefCell::new(None) };
+}
+
+/// Snapshot the caller currently set by the surrounding [`Router::route_with_caller`]
+/// call, if any. `DispatchHub` uses this to thread the originating
+/// identity into nested service calls.
+pub fn current_caller() -> Option<CallerContext> {
+    CURRENT_CALLER.with(|c| *c.borrow())
+}
+
+/// RAII guard that installs `caller` as the current thread-local and
+/// restores the previous value on drop — including on panic.
+pub(crate) struct CallerGuard {
+    prev: Option<CallerContext>,
+}
+
+impl CallerGuard {
+    pub(crate) fn new(caller: Option<CallerContext>) -> Self {
+        let prev = CURRENT_CALLER.with(|c| {
+            let old = *c.borrow();
+            *c.borrow_mut() = caller;
+            old
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for CallerGuard {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        CURRENT_CALLER.with(|c| *c.borrow_mut() = prev);
+    }
+}
 
 /// Routes MCP requests to the appropriate service handler
 pub struct Router {
@@ -85,6 +137,11 @@ impl Router {
                 );
             }
         };
+
+        // WS2.M3 phase 3 — install the caller in a thread-local so any
+        // `DispatchHub::dispatch` call made by the handler sees the
+        // originating identity (and not an anonymous default).
+        let _guard = CallerGuard::new(caller.copied());
 
         match handler.required_policy(&request.method) {
             HandlerPolicy::Public => handler.handle(path, request),
@@ -386,6 +443,75 @@ mod tests {
             Some(&policy),
         );
         assert!(resp.error.is_none(), "GuardianOnly must allow when scope+uid match; got {:?}", resp.error);
+    }
+
+    // -- WS2.M3 phase 3 — CallerGuard thread-local mechanics ---------------
+
+    #[test]
+    fn caller_guard_sets_and_restores_thread_local() {
+        // No caller in scope by default.
+        assert!(current_caller().is_none());
+        {
+            let _g = CallerGuard::new(Some(CallerContext::from_parts(1000, 100, 42)));
+            assert_eq!(current_caller().map(|c| c.uid), Some(1000));
+        }
+        // Guard dropped → back to None.
+        assert!(current_caller().is_none());
+    }
+
+    #[test]
+    fn caller_guard_nested_saves_and_restores_correctly() {
+        let outer = CallerContext::from_parts(1000, 100, 1);
+        let inner = CallerContext::from_parts(1001, 100, 2);
+        {
+            let _g_outer = CallerGuard::new(Some(outer));
+            assert_eq!(current_caller().map(|c| c.uid), Some(1000));
+            {
+                let _g_inner = CallerGuard::new(Some(inner));
+                assert_eq!(current_caller().map(|c| c.uid), Some(1001));
+            }
+            // Inner dropped → restored to outer.
+            assert_eq!(current_caller().map(|c| c.uid), Some(1000));
+        }
+        // Both dropped → None.
+        assert!(current_caller().is_none());
+    }
+
+    #[test]
+    fn caller_guard_overrides_previous_some_with_none() {
+        // Some(X) → None → Some(X) restoration.
+        let outer = CallerContext::from_parts(1000, 100, 1);
+        let _g_outer = CallerGuard::new(Some(outer));
+        {
+            let _g_inner = CallerGuard::new(None);
+            assert!(current_caller().is_none());
+        }
+        assert_eq!(current_caller().map(|c| c.uid), Some(1000));
+    }
+
+    #[test]
+    fn route_with_caller_installs_caller_into_thread_local_during_handle() {
+        // Use a custom handler that reads `current_caller()` and embeds
+        // the uid into its response — proves the router set the
+        // thread-local before invoking handle.
+        struct CallerReadingHandler;
+        impl ServiceHandler for CallerReadingHandler {
+            fn handle(&self, _path: &McpPath, request: &JsonRpcRequest) -> JsonRpcResponse {
+                let uid = current_caller().map(|c| c.uid).unwrap_or(u32::MAX);
+                JsonRpcResponse::success(request.id.clone(), json!({"observed_uid": uid}))
+            }
+            fn list_methods(&self) -> Vec<&str> {
+                vec!["whoami"]
+            }
+        }
+
+        let mut r = Router::new();
+        r.register("readcaller", CallerReadingHandler);
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let resp = r.route_with_caller(&p("readcaller"), &req("whoami"), Some(&caller), None);
+        assert_eq!(resp.result.unwrap()["observed_uid"], 1000);
+        // After the call, thread-local is back to its prior state.
+        assert!(current_caller().is_none());
     }
 
     #[test]

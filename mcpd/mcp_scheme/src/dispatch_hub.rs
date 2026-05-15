@@ -13,19 +13,29 @@
 
 use std::sync::{Arc, RwLock, Weak};
 
+use mcpd_authority_shim::CapabilityPolicy;
 use serde_json::Value;
 
 use crate::protocol::{JsonRpcResponse, INTERNAL_ERROR};
-use crate::router::Router;
+use crate::router::{current_caller, Router};
 
 /// Clonable dispatcher backed by a `Weak<Router>` set after construction.
 ///
 /// Cloning is cheap (shared `Arc<RwLock<...>>` handle). All clones see the
 /// same binding, so binding once after construction suffices for every
 /// handler that captured a clone.
+///
+/// WS2.M3 phase 3 — also carries an optional `Weak<CapabilityPolicy>`
+/// bound by [`DispatchHub::bind_policy`]. When present, internal
+/// dispatches forward both the thread-local caller (set by the
+/// surrounding `Router::route_with_caller` call) and the policy into
+/// the nested route, so a `RequiresCapability` method invoked across
+/// services is evaluated against the originating identity instead of
+/// failing for lack of a caller.
 #[derive(Clone)]
 pub struct DispatchHub {
     inner: Arc<RwLock<Option<Weak<Router>>>>,
+    policy: Arc<RwLock<Option<Weak<CapabilityPolicy>>>>,
 }
 
 impl DispatchHub {
@@ -38,6 +48,7 @@ impl DispatchHub {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(None)),
+            policy: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -57,6 +68,22 @@ impl DispatchHub {
         *guard = Some(Arc::downgrade(router));
     }
 
+    /// WS2.M3 phase 3 — Bind the hub to a [`CapabilityPolicy`] so
+    /// internal dispatches can evaluate `RequiresCapability` methods
+    /// against the originating caller (read from the router's
+    /// thread-local) instead of failing for lack of a policy.
+    ///
+    /// Optional: if unbound, internal dispatches still work for
+    /// `Public` methods (the historical behaviour); `RequiresCapability`
+    /// methods will deny — same as before this phase.
+    pub fn bind_policy(&self, policy: &Arc<CapabilityPolicy>) {
+        let mut guard = self
+            .policy
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        *guard = Some(Arc::downgrade(policy));
+    }
+
     /// Dispatch a service+method call through the bound router.
     ///
     /// Returns `INTERNAL_ERROR` if:
@@ -64,12 +91,18 @@ impl DispatchHub {
     /// - the router has been dropped (`Weak::upgrade` fails),
     /// - the internal lock is poisoned.
     ///
+    /// WS2.M3 phase 3 — Reads the thread-local caller installed by the
+    /// surrounding `Router::route_with_caller` (if any) and forwards
+    /// it alongside the bound policy (if any). This makes
+    /// `RequiresCapability` methods reachable from internal callers
+    /// that hold the originating identity.
+    ///
     /// Never panics.
     pub fn dispatch(&self, service: &str, method: &str, params: Value) -> JsonRpcResponse {
         // Acquire the read lock, clone the Weak, and release the lock before
         // calling router.dispatch() to avoid holding it across an outbound
         // call that might recurse into another DispatchHub method.
-        let weak = {
+        let weak_router = {
             let guard = match self.inner.read() {
                 Ok(g) => g,
                 Err(_) => {
@@ -91,14 +124,40 @@ impl DispatchHub {
                 }
             }
         };
-        match weak.upgrade() {
-            Some(router) => router.dispatch(service, method, params),
-            None => JsonRpcResponse::error(
-                None,
-                INTERNAL_ERROR,
-                "Router dropped before DispatchHub call".to_string(),
-            ),
-        }
+        let weak_policy = match self.policy.read() {
+            Ok(g) => g.as_ref().cloned(),
+            Err(_) => None,
+        };
+
+        let router = match weak_router.upgrade() {
+            Some(r) => r,
+            None => {
+                return JsonRpcResponse::error(
+                    None,
+                    INTERNAL_ERROR,
+                    "Router dropped before DispatchHub call".to_string(),
+                );
+            }
+        };
+        let policy = weak_policy.and_then(|w| w.upgrade());
+        let caller = current_caller();
+
+        // Build a synthetic McpPath + JsonRpcRequest, mirroring what
+        // `Router::dispatch` did, but call `route_with_caller` directly
+        // so caller + policy actually reach the decision point.
+        use crate::protocol::JsonRpcRequest;
+        use crate::McpPath;
+        let path = McpPath {
+            service: service.to_string(),
+            resource: Vec::new(),
+        };
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: method.to_string(),
+            params,
+            id: None,
+        };
+        router.route_with_caller(&path, &request, caller.as_ref(), policy.as_deref())
     }
 }
 

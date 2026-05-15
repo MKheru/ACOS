@@ -214,6 +214,8 @@ impl ServiceHandler for McpHandler {
                         "system", "process", "memory", "file", "file_write", "file_search",
                         "log", "config", "echo", "mcp", "llm", "command", "service",
                         "konsole", "display", "ai", "talk", "guardian", "net",
+                        // WS11.M1 — registered alongside the original 19.
+                        "observability",
                     ];
                     let mut services = Vec::new();
                     for &name in &candidates {

@@ -171,6 +171,11 @@ impl McpScheme {
         // is sealed into its own `Arc`.
         let shim = std::sync::Arc::new(mcpd_authority_shim::AuthorityShim::new());
 
+        // WS2.M3 phase 3 — Build the capability policy early too so the
+        // DispatchHub can be bound to it (so internal dispatches see the
+        // same policy the outer router uses).
+        let policy = std::sync::Arc::new(mcpd_authority_shim::CapabilityPolicy::new());
+
         let mut router = router::Router::new();
 
         // Register built-in services
@@ -255,16 +260,17 @@ impl McpScheme {
             });
         router.register("mcp", handler::McpHandler::new_with_dispatch(dispatch_mcp));
 
-        // Wrap router in Arc, then bind hub. No `unsafe` block needed.
+        // Wrap router in Arc, then bind hub (router + policy). No `unsafe`.
         let router = std::sync::Arc::new(router);
         hub.bind(&router);
+        hub.bind_policy(&policy);
 
         McpScheme {
             connections: FxHashMap::default(),
             next_id: 1,
             router,
             shim,
-            policy: std::sync::Arc::new(mcpd_authority_shim::CapabilityPolicy::new()),
+            policy,
             next_trace_id: 1,
         }
     }
@@ -4305,6 +4311,73 @@ mod tests {
         // total_appends is monotonic and unaffected by ring overwrites.
         let total = result["total_appends"].as_u64().unwrap();
         assert!(total >= 2);
+    }
+
+    // -------------------------------------------------------------------
+    // WS2.M3 phase 3 — caller propagation across DispatchHub
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ws2m3_phase3_internal_dispatch_propagates_allowlisted_caller() {
+        // services/list goes through McpHandler::handle_services_list,
+        // which dispatches "ping" to each known service via DispatchHub.
+        // observability declares `RequiresCapability`, so its ping call
+        // is now allowed only when the originating caller's uid is on
+        // the policy allowlist. With phase 3 the caller propagates
+        // through the hub; observability resolves as "live" instead of
+        // "error".
+        use acos_authority_types::CallerContext;
+
+        let mut scheme = McpScheme::new();
+        scheme.capability_policy().allow_uid(1000);
+        let caller = CallerContext::from_parts(1000, 100, 42);
+
+        let id = scheme.open_as(b"mcp", caller).unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"services/list","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let mut buf = vec![0u8; 16384];
+        let n = scheme.read(id, &mut buf).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+        let services = response["result"]["services"].as_array().expect("services array");
+        let obs = services
+            .iter()
+            .find(|s| s["name"] == "observability")
+            .expect("observability listed");
+        assert_eq!(
+            obs["status"], "live",
+            "observability must resolve as live for allowlisted caller; got {:?}",
+            obs
+        );
+    }
+
+    #[test]
+    fn ws2m3_phase3_internal_dispatch_anonymous_caller_still_denied() {
+        // Without an allowlisted caller, the internal ping to
+        // observability gets DENIED_BY_POLICY (the deny is reported as
+        // a JSON-RPC error in the dispatch response, which `services/list`
+        // surfaces as `status != "live"`).
+        let mut scheme = McpScheme::new();
+        // Don't allowlist anyone.
+        let id = scheme.open(b"mcp").unwrap(); // anonymous caller
+        let req = br#"{"jsonrpc":"2.0","method":"services/list","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let mut buf = vec![0u8; 16384];
+        let n = scheme.read(id, &mut buf).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+        let services = response["result"]["services"].as_array().expect("services array");
+        let obs = services.iter().find(|s| s["name"] == "observability");
+        // Observability entry may either be present-with-status!=live or
+        // omitted depending on how `down` is computed in McpHandler;
+        // what matters is that it never appears as "live".
+        if let Some(o) = obs {
+            assert_ne!(
+                o["status"], "live",
+                "anonymous caller must NOT resolve observability as live; got {:?}",
+                o
+            );
+        }
     }
 
     #[test]
