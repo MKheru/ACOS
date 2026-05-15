@@ -151,6 +151,11 @@ struct McpConnection {
     created_at: Instant,
     /// Last successful read or write (used for `IDLE_TIMEOUT`).
     last_activity: Instant,
+    /// WS2.M3 — Kernel-level identity of the process that opened this
+    /// handle. `anonymous()` on host builds and through the legacy
+    /// `open()` entry point; populated from `redox_scheme::CallerCtx`
+    /// when reached via the SchemeSync bridge (`scheme_bridge.rs`).
+    caller: acos_authority_types::CallerContext,
 }
 
 impl McpScheme {
@@ -268,10 +273,16 @@ impl McpScheme {
     /// the shim's ring. Treats `DENIED_BY_POLICY` as a `Deny` verdict and any
     /// other outcome (success or other error) as `Allow` for now — the full
     /// verdict mapping arrives with the capability fabric (WS3).
+    ///
+    /// `caller_label` carries the [`CallerContext`] of the connection (set
+    /// by [`McpScheme::open_as`]); it is embedded in the audit event so
+    /// observers can correlate dispatches with the identity that opened
+    /// the handle. Anonymous callers render as `"-"`.
     fn audit_route(
         &self,
         trace_id: u128,
         connection_id: HandleId,
+        caller_label: &str,
         action: &str,
         response: &protocol::JsonRpcResponse,
         latency_us: u64,
@@ -283,9 +294,10 @@ impl McpScheme {
             }
             _ => Verdict::Allow,
         };
+        let caller = format!("session-{}[{}]", connection_id, caller_label);
         let event = AuditEvent::new(
             trace_id,
-            format!("session-{}", connection_id),
+            caller,
             action.to_string(),
             verdict,
             None,
@@ -299,8 +311,26 @@ impl McpScheme {
         let _ = self.shim.record(event);
     }
 
-    /// Open a new connection to an MCP resource
+    /// Open a new connection to an MCP resource (legacy entry point).
+    ///
+    /// Equivalent to `open_as(path, CallerContext::anonymous())`. Host
+    /// builds and unit tests call this directly; the SchemeSync bridge
+    /// uses [`McpScheme::open_as`] to thread the real Redox caller
+    /// identity through.
     pub fn open(&mut self, path: &[u8]) -> Result<HandleId, i32> {
+        self.open_as(path, acos_authority_types::CallerContext::anonymous())
+    }
+
+    /// WS2.M3 — Open a connection while recording the caller identity.
+    ///
+    /// Stored on the resulting [`McpConnection`] for the lifetime of the
+    /// handle. Future capability checks (`can_invoke`, etc.) will read
+    /// this field; today it surfaces in the audit ring's `caller` field.
+    pub fn open_as(
+        &mut self,
+        path: &[u8],
+        caller: acos_authority_types::CallerContext,
+    ) -> Result<HandleId, i32> {
         // WS2.M2 — Reap expired connections before enforcing the MAX_CONNECTIONS
         // limit so stale partial-request Slowloris peers can't keep the table full.
         self.reap_expired_connections(Instant::now());
@@ -348,6 +378,7 @@ impl McpScheme {
             response_pos: 0,
             created_at: now,
             last_activity: now,
+            caller,
         });
 
         Ok(id)
@@ -391,15 +422,17 @@ impl McpScheme {
         let now = Instant::now();
         self.reap_expired_connections(now);
 
-        // -- Phase 1 : gather request + path under conn borrow ----------------
-        let (path_clone, request) = {
+        // -- Phase 1 : gather request + path + caller under conn borrow ------
+        let (path_clone, request, caller_label) = {
             let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
             conn.last_activity = now;
+
+            let label = conn.caller.label();
 
             // Fast path: parse directly from input when nothing is buffered.
             if conn.request_buf.is_empty() {
                 match serde_json::from_slice::<protocol::JsonRpcRequest>(buf) {
-                    Ok(req) => (conn.path.clone(), req),
+                    Ok(req) => (conn.path.clone(), req, label),
                     Err(_) => {
                         // Not a complete JSON yet — fall through to slow path.
                         // F1: enforce buffer cap before extending.
@@ -412,7 +445,7 @@ impl McpScheme {
                             Ok(req) => {
                                 let p = conn.path.clone();
                                 conn.request_buf.clear();
-                                (p, req)
+                                (p, req, label)
                             }
                             Err(_) => return Ok(buf.len()),
                         }
@@ -429,7 +462,7 @@ impl McpScheme {
                     Ok(req) => {
                         let p = conn.path.clone();
                         conn.request_buf.clear();
-                        (p, req)
+                        (p, req, label)
                     }
                     Err(_) => return Ok(buf.len()),
                 }
@@ -442,7 +475,7 @@ impl McpScheme {
         let action = format!("{}.{}", path_clone.service, request.method);
         let response = self.router.route(&path_clone, &request);
         let latency_us = start.elapsed().as_micros() as u64;
-        self.audit_route(trace_id, id, &action, &response, latency_us);
+        self.audit_route(trace_id, id, &caller_label, &action, &response, latency_us);
 
         // -- Phase 3 : write response_buf under fresh conn borrow -------------
         let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
@@ -4046,6 +4079,70 @@ mod tests {
         assert_eq!(ids, vec![1, 2, 3], "trace ids must increment strictly");
         // total_appends counter is monotonic regardless of overwrites.
         assert_eq!(scheme.authority_shim().audit_ring().total_appends(), 3);
+    }
+
+    // -------------------------------------------------------------------
+    // WS2.M3 — CallerContext threaded into McpConnection + audit
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ws2m3_legacy_open_uses_anonymous_caller() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        assert_eq!(snap.len(), 1);
+        // Anonymous label rendered as "-" inside the brackets.
+        assert!(
+            snap[0].caller.ends_with("[-]"),
+            "expected anonymous-caller marker [-], got '{}'",
+            snap[0].caller
+        );
+    }
+
+    #[test]
+    fn ws2m3_open_as_records_caller_in_audit() {
+        use acos_authority_types::CallerContext;
+
+        let mut scheme = McpScheme::new();
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let id = scheme.open_as(b"echo", caller).unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(
+            snap[0].caller.contains("uid=1000,gid=100,pid=42"),
+            "expected caller label in audit, got '{}'",
+            snap[0].caller
+        );
+    }
+
+    #[test]
+    fn ws2m3_two_distinct_callers_produce_distinct_audit_labels() {
+        use acos_authority_types::CallerContext;
+
+        let mut scheme = McpScheme::new();
+        let alice = CallerContext::from_parts(1000, 100, 42);
+        let bob = CallerContext::from_parts(1001, 100, 43);
+
+        let id_a = scheme.open_as(b"echo", alice).unwrap();
+        let id_b = scheme.open_as(b"echo", bob).unwrap();
+
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
+        scheme.write(id_a, req).unwrap();
+        scheme.write(id_b, req).unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        assert_eq!(snap.len(), 2);
+        // Distinct uids must surface as distinct labels in the audit log.
+        let labels: Vec<&str> = snap.iter().map(|e| e.caller.as_str()).collect();
+        assert!(labels[0].contains("uid=1000"));
+        assert!(labels[1].contains("uid=1001"));
+        assert_ne!(labels[0], labels[1]);
     }
 
     #[test]

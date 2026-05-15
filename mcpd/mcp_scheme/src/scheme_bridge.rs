@@ -59,23 +59,30 @@ mod inner {
             Ok(ROOT_HANDLE)
         }
 
-        // NOTE: CallerCtx (UID/GID/PID) intentionally not checked.
-        // The mcp: scheme is world-accessible by design, like rand: and null:.
-        // Access control is handled at the MCP service layer, not the scheme layer.
+        // WS2.M3 — CallerCtx (UID/GID/PID) is now captured and stored on
+        // the connection's `McpConnection.caller` field via `open_as`.
+        // Access control is still applied at the MCP service layer (router
+        // `required_policy()` + future capability fabric), but the identity
+        // it consults is now real instead of `anonymous()`.
         fn openat(
             &mut self,
             dirfd: usize,
             path: &str,
             _flags: usize,
             _fcntl_flags: u32,
-            _ctx: &CallerCtx,
+            ctx: &CallerCtx,
         ) -> Result<OpenResult> {
             if !self.is_root(dirfd) {
                 return Err(Error::new(EACCES));
             }
 
             let path_bytes = path.as_bytes();
-            match self.inner.open(path_bytes) {
+            let caller = acos_authority_types::CallerContext::from_parts(
+                ctx.uid as u32,
+                ctx.gid as u32,
+                ctx.pid as u32,
+            );
+            match self.inner.open_as(path_bytes, caller) {
                 Ok(id) => {
                     self.paths.insert(id, path.to_string());
                     Ok(OpenResult::ThisScheme {

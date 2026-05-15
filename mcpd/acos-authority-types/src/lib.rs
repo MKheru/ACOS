@@ -12,12 +12,14 @@
 #![deny(unsafe_code)]
 
 mod audit;
+mod caller;
 mod capability;
 mod decision;
 mod policy;
 mod scope;
 
 pub use audit::AuditEvent;
+pub use caller::CallerContext;
 pub use capability::{Capability, CapabilityGrant, CapabilityId};
 pub use decision::{Decision, DenyCode, Severity, Verdict};
 pub use policy::{HandlerPolicy, Policy};
