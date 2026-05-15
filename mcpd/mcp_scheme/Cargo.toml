@@ -18,6 +18,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 rustc-hash = "2"
+# WS2.M4 — Rust port of agent.mcp_sanitizer (prompt injection detection).
+regex = "1"
 # WS1.M1 — foundation primitive crate (Decision/Capability/HandlerPolicy/...).
 acos-authority-types = { path = "../acos-authority-types" }
 # WS1.M2 — audit ring buffer + bootstrap (wired into McpScheme::write).

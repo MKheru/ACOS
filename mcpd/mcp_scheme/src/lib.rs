@@ -23,6 +23,7 @@ pub mod observability_handler;
 pub mod protocol;
 pub mod router;
 pub mod handler;
+pub mod sanitizer;
 
 mod system_handlers;
 mod file_handlers;
