@@ -292,6 +292,24 @@ impl McpScheme {
         id
     }
 
+    /// WS3.M8 — Emit the `Intent` half of a dual-phase audit pair *before*
+    /// the router dispatches. Shares `trace_id` and `action` with the
+    /// matching `Result` event so observers can pair them; latency is
+    /// always 0 on Intent (the actual latency is recorded on Result).
+    fn audit_intent(
+        &self,
+        trace_id: u128,
+        connection_id: HandleId,
+        caller_label: &str,
+        action: &str,
+    ) {
+        use acos_authority_types::AuditEvent;
+        let caller = format!("session-{}[{}]", connection_id, caller_label);
+        let event = AuditEvent::new_intent(trace_id, caller, action.to_string(), None);
+        // Fail-quiet — see `audit_route` for rationale.
+        let _ = self.shim.record(event);
+    }
+
     /// Build an [`AuditEvent`] from a request/response pair and append it to
     /// the shim's ring. Treats `DENIED_BY_POLICY` as a `Deny` verdict and any
     /// other outcome (success or other error) as `Allow` for now — the full
@@ -493,10 +511,17 @@ impl McpScheme {
             }
         }; // conn borrow released here
 
-        // -- Phase 2 : dispatch + audit (need &mut self) ----------------------
+        // -- Phase 2 : dispatch + dual-phase audit (need &mut self) -----------
         let trace_id = self.allocate_trace_id();
-        let start = Instant::now();
         let action = format!("{}.{}", path_clone.service, request.method);
+        // WS3.M8 — Intent emission BEFORE dispatch. Pairs by `trace_id`
+        // with the Result event below. A `trace_id` that has an Intent
+        // but no following Result indicates a handler that hung or
+        // panicked (the dispatch never returned), so the ring itself
+        // surfaces that anomaly.
+        self.audit_intent(trace_id, id, &caller_label, &action);
+
+        let start = Instant::now();
         // WS2.M3 phase 2 — caller-aware route. RequiresCapability /
         // GuardianOnly handler methods are now evaluated against the
         // connection's caller + policy allowlist.
@@ -4083,21 +4108,31 @@ mod tests {
 
     #[test]
     fn ws1m2_audit_ring_records_event_on_each_write() {
+        use acos_authority_types::EventKind;
         let mut scheme = McpScheme::new();
         let id = scheme.open(b"echo").unwrap();
         let req = br#"{"jsonrpc":"2.0","method":"echo","params":{"x":1},"id":1}"#;
         scheme.write(id, req).unwrap();
 
         let snap = scheme.authority_shim().audit_ring().snapshot();
-        assert_eq!(snap.len(), 1, "expected one audit entry after one write");
-        assert_eq!(snap[0].action, "echo.echo");
+        // WS3.M8 — dual-phase: one Intent + one Result per dispatch.
+        assert_eq!(snap.len(), 2, "expected Intent + Result pair after one write");
+        assert_eq!(snap[0].kind, EventKind::Intent);
+        assert_eq!(snap[1].kind, EventKind::Result);
+        // Both events share the same trace_id and action.
         assert_eq!(snap[0].trace_id, 1);
+        assert_eq!(snap[1].trace_id, 1);
+        assert_eq!(snap[0].action, "echo.echo");
+        assert_eq!(snap[1].action, "echo.echo");
+        // Intent carries 0 latency by contract; Result carries the real one.
+        assert_eq!(snap[0].latency_us, 0);
         // caller is the session-prefixed handle id we assigned.
         assert!(snap[0].caller.starts_with("session-"));
     }
 
     #[test]
     fn ws1m2_audit_ring_accumulates_across_writes_with_monotonic_trace_ids() {
+        use acos_authority_types::EventKind;
         let mut scheme = McpScheme::new();
         let id = scheme.open(b"echo").unwrap();
         let req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
@@ -4106,11 +4141,44 @@ mod tests {
         scheme.write(id, req).unwrap();
 
         let snap = scheme.authority_shim().audit_ring().snapshot();
-        assert_eq!(snap.len(), 3);
+        // WS3.M8 — 3 writes × (Intent+Result) = 6 events.
+        assert_eq!(snap.len(), 6);
+        // trace_ids appear as paired duplicates [1,1,2,2,3,3] in insertion order.
         let ids: Vec<u128> = snap.iter().map(|e| e.trace_id).collect();
-        assert_eq!(ids, vec![1, 2, 3], "trace ids must increment strictly");
+        assert_eq!(ids, vec![1, 1, 2, 2, 3, 3], "Intent+Result pairs share trace_id");
+        let kinds: Vec<EventKind> = snap.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                EventKind::Intent, EventKind::Result,
+                EventKind::Intent, EventKind::Result,
+                EventKind::Intent, EventKind::Result,
+            ]
+        );
         // total_appends counter is monotonic regardless of overwrites.
-        assert_eq!(scheme.authority_shim().audit_ring().total_appends(), 3);
+        assert_eq!(scheme.authority_shim().audit_ring().total_appends(), 6);
+    }
+
+    #[test]
+    fn ws3m8_intent_and_result_share_trace_id_and_action() {
+        use acos_authority_types::EventKind;
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        let intent = snap.iter().find(|e| e.kind == EventKind::Intent).expect("Intent");
+        let result = snap.iter().find(|e| e.kind == EventKind::Result).expect("Result");
+        // Pairing invariants.
+        assert_eq!(intent.trace_id, result.trace_id);
+        assert_eq!(intent.action, result.action);
+        assert_eq!(intent.caller, result.caller);
+        // Intent has placeholder verdict + zero latency.
+        assert_eq!(intent.latency_us, 0);
+        // Result records the real (non-zero by construction, though tests
+        // can be too fast — we only assert it parses).
+        let _ = result.latency_us;
     }
 
     // -------------------------------------------------------------------
@@ -4125,13 +4193,15 @@ mod tests {
         scheme.write(id, req).unwrap();
 
         let snap = scheme.authority_shim().audit_ring().snapshot();
-        assert_eq!(snap.len(), 1);
-        // Anonymous label rendered as "-" inside the brackets.
-        assert!(
-            snap[0].caller.ends_with("[-]"),
-            "expected anonymous-caller marker [-], got '{}'",
-            snap[0].caller
-        );
+        // WS3.M8 — dual-phase: Intent + Result.
+        assert_eq!(snap.len(), 2);
+        for e in &snap {
+            assert!(
+                e.caller.ends_with("[-]"),
+                "expected anonymous-caller marker [-], got '{}'",
+                e.caller
+            );
+        }
     }
 
     #[test]
@@ -4145,12 +4215,15 @@ mod tests {
         scheme.write(id, req).unwrap();
 
         let snap = scheme.authority_shim().audit_ring().snapshot();
-        assert_eq!(snap.len(), 1);
-        assert!(
-            snap[0].caller.contains("uid=1000,gid=100,pid=42"),
-            "expected caller label in audit, got '{}'",
-            snap[0].caller
-        );
+        // WS3.M8 — dual-phase: Intent + Result both carry the same caller.
+        assert_eq!(snap.len(), 2);
+        for e in &snap {
+            assert!(
+                e.caller.contains("uid=1000,gid=100,pid=42"),
+                "expected caller label in audit, got '{}'",
+                e.caller
+            );
+        }
     }
 
     // -------------------------------------------------------------------
@@ -4183,12 +4256,19 @@ mod tests {
         let err = response["error"].as_object().expect("anonymous must be denied");
         assert_eq!(err["code"], protocol::DENIED_BY_POLICY);
 
-        // And the deny is recorded in the audit ring.
+        // And the deny is recorded in the audit ring on the Result event
+        // (the paired Intent carries a placeholder Allow verdict).
         let snap = scheme.authority_shim().audit_ring().snapshot();
-        let denied = snap.iter().find(|e| e.action == "observability.recent").unwrap();
+        let denied = snap
+            .iter()
+            .find(|e| {
+                e.action == "observability.recent"
+                    && e.kind == acos_authority_types::EventKind::Result
+            })
+            .unwrap();
         match &denied.verdict {
             acos_authority_types::Verdict::Deny(_) => {}
-            other => panic!("expected Deny, got {:?}", other),
+            other => panic!("expected Deny on Result event, got {:?}", other),
         }
     }
 
@@ -4275,7 +4355,7 @@ mod tests {
 
     #[test]
     fn ws2m3_two_distinct_callers_produce_distinct_audit_labels() {
-        use acos_authority_types::CallerContext;
+        use acos_authority_types::{CallerContext, EventKind};
 
         let mut scheme = McpScheme::new();
         let alice = CallerContext::from_parts(1000, 100, 42);
@@ -4289,12 +4369,18 @@ mod tests {
         scheme.write(id_b, req).unwrap();
 
         let snap = scheme.authority_shim().audit_ring().snapshot();
-        assert_eq!(snap.len(), 2);
-        // Distinct uids must surface as distinct labels in the audit log.
-        let labels: Vec<&str> = snap.iter().map(|e| e.caller.as_str()).collect();
-        assert!(labels[0].contains("uid=1000"));
-        assert!(labels[1].contains("uid=1001"));
-        assert_ne!(labels[0], labels[1]);
+        // WS3.M8 — 2 writes × (Intent+Result) = 4 events.
+        assert_eq!(snap.len(), 4);
+        // Look at Result-kind events for canonical observation.
+        let result_labels: Vec<&str> = snap
+            .iter()
+            .filter(|e| e.kind == EventKind::Result)
+            .map(|e| e.caller.as_str())
+            .collect();
+        assert_eq!(result_labels.len(), 2);
+        assert!(result_labels[0].contains("uid=1000"));
+        assert!(result_labels[1].contains("uid=1001"));
+        assert_ne!(result_labels[0], result_labels[1]);
     }
 
     #[test]

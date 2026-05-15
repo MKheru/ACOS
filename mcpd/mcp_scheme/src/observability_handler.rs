@@ -54,6 +54,9 @@ impl ObservabilityHandler {
             "trace_id": event.trace_id.to_string(),
             "caller": event.caller,
             "action": event.action,
+            // WS3.M8 — dual-phase: clients pair Intent + Result by
+            // matching `trace_id`. The `kind` field disambiguates.
+            "kind": event.kind.label(),
             "verdict": verdict_label(&event.verdict),
             "latency_us": event.latency_us,
         })
@@ -343,6 +346,51 @@ mod tests {
         let resp = h.handle(&path(), &make_request("delete_all", json!({})));
         let err = resp.error.expect("unknown method must error");
         assert_eq!(err.code, METHOD_NOT_FOUND);
+    }
+
+    #[test]
+    fn recent_event_json_includes_result_kind_label() {
+        // Default helper `ev()` constructs Result-kind events.
+        let shim = shim_with_events(vec![ev(1, "a", Verdict::Allow)]);
+        let h = ObservabilityHandler::new(shim);
+        let resp = h.handle(&path(), &make_request("recent", json!({})));
+        let result = resp.result.unwrap();
+        let events = result["events"].as_array().unwrap();
+        assert_eq!(events[0]["kind"], "result");
+    }
+
+    #[test]
+    fn recent_event_json_distinguishes_intent_from_result() {
+        // Manually record one Intent and one Result for the same trace_id.
+        let shim = Arc::new(AuthorityShim::new());
+        shim.record(AuditEvent::new_intent(
+            42,
+            "test".to_string(),
+            "x.y".to_string(),
+            None,
+        ))
+        .unwrap();
+        shim.record(AuditEvent::new(
+            42,
+            "test".to_string(),
+            "x.y".to_string(),
+            Verdict::Allow,
+            None,
+            17,
+        ))
+        .unwrap();
+        let h = ObservabilityHandler::new(shim);
+        let resp = h.handle(&path(), &make_request("recent", json!({})));
+        let events = resp.result.unwrap()["events"].clone();
+        let events = events.as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        // Newest first: Result before Intent (insertion order preserved by
+        // the ring, then reversed by `recent`).
+        assert_eq!(events[0]["kind"], "result");
+        assert_eq!(events[1]["kind"], "intent");
+        // Both reference the same trace_id (string-encoded u128).
+        assert_eq!(events[0]["trace_id"], "42");
+        assert_eq!(events[1]["trace_id"], "42");
     }
 
     #[test]

@@ -15,6 +15,7 @@ mod audit;
 mod caller;
 mod capability;
 mod decision;
+mod event_kind;
 mod policy;
 mod scope;
 
@@ -22,5 +23,6 @@ pub use audit::AuditEvent;
 pub use caller::CallerContext;
 pub use capability::{Capability, CapabilityGrant, CapabilityId};
 pub use decision::{Decision, DenyCode, Severity, Verdict};
+pub use event_kind::EventKind;
 pub use policy::{HandlerPolicy, Policy};
 pub use scope::AuthorityScope;
