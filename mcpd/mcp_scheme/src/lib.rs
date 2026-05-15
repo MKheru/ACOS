@@ -19,6 +19,7 @@
 //! - Read the JSON-RPC response back
 
 pub mod dispatch_hub;
+pub mod observability_handler;
 pub mod protocol;
 pub mod router;
 pub mod handler;
@@ -164,6 +165,11 @@ struct McpConnection {
 
 impl McpScheme {
     pub fn new() -> Self {
+        // WS1.M2 + WS11.M1 — Build the authority shim early so the
+        // observability handler can take an `Arc` clone before the router
+        // is sealed into its own `Arc`.
+        let shim = std::sync::Arc::new(mcpd_authority_shim::AuthorityShim::new());
+
         let mut router = router::Router::new();
 
         // Register built-in services
@@ -180,6 +186,11 @@ impl McpScheme {
         router.register("command", CommandHandler::new());
         router.register("service", ServiceManagerHandler::new());
         router.register("net", NetHandler::new());
+        // WS11.M1 — read-only view onto the authority audit ring.
+        router.register(
+            "observability",
+            observability_handler::ObservabilityHandler::new(shim.clone()),
+        );
         // NOTE: llm, ai, talk, guardian registered AFTER Arc wrap (Phase 3) — they need dispatch
 
         // WS7: Konsole — shared state between KonsoleHandler and DisplayHandler
@@ -251,7 +262,7 @@ impl McpScheme {
             connections: FxHashMap::default(),
             next_id: 1,
             router,
-            shim: std::sync::Arc::new(mcpd_authority_shim::AuthorityShim::new()),
+            shim,
             policy: std::sync::Arc::new(mcpd_authority_shim::CapabilityPolicy::new()),
             next_trace_id: 1,
         }
@@ -4139,6 +4150,126 @@ mod tests {
             snap[0].caller.contains("uid=1000,gid=100,pid=42"),
             "expected caller label in audit, got '{}'",
             snap[0].caller
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // WS11.M1 — observability service end-to-end via McpScheme
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ws11m1_observability_is_registered_as_service() {
+        let scheme = McpScheme::new();
+        // The service is reachable through open(); the handler itself
+        // declares RequiresCapability so a subsequent write will be
+        // refused unless the caller is allowlisted.
+        assert!(scheme.router.has_service("observability"));
+    }
+
+    #[test]
+    fn ws11m1_observability_anonymous_caller_is_denied_end_to_end() {
+        let mut scheme = McpScheme::new();
+        // Legacy `open()` carries an anonymous caller.
+        let id = scheme.open(b"observability").unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"recent","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        // Read the response from the connection.
+        let mut buf = vec![0u8; 8192];
+        let n = scheme.read(id, &mut buf).unwrap();
+        let response: serde_json::Value =
+            serde_json::from_slice(&buf[..n]).expect("response is valid JSON");
+
+        let err = response["error"].as_object().expect("anonymous must be denied");
+        assert_eq!(err["code"], protocol::DENIED_BY_POLICY);
+
+        // And the deny is recorded in the audit ring.
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        let denied = snap.iter().find(|e| e.action == "observability.recent").unwrap();
+        match &denied.verdict {
+            acos_authority_types::Verdict::Deny(_) => {}
+            other => panic!("expected Deny, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ws11m1_observability_allowlisted_caller_reads_ring() {
+        use acos_authority_types::CallerContext;
+
+        let mut scheme = McpScheme::new();
+
+        // First produce some history that the caller can later read.
+        let bg = scheme.open(b"echo").unwrap();
+        let echo_req = br#"{"jsonrpc":"2.0","method":"echo","params":{"x":1},"id":1}"#;
+        scheme.write(bg, echo_req).unwrap();
+        scheme.write(bg, echo_req).unwrap();
+
+        // Now allowlist a uid and open as that caller.
+        scheme.capability_policy().allow_uid(1000);
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let id = scheme.open_as(b"observability", caller).unwrap();
+
+        let req = br#"{"jsonrpc":"2.0","method":"recent","params":{"limit":10},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let mut buf = vec![0u8; 16384];
+        let n = scheme.read(id, &mut buf).unwrap();
+        let response: serde_json::Value =
+            serde_json::from_slice(&buf[..n]).expect("response is valid JSON");
+
+        assert!(response["error"].is_null(), "allowlisted caller must succeed; got {:?}", response);
+        let result = &response["result"];
+        let events = result["events"].as_array().expect("events must be array");
+        assert!(events.len() >= 2, "expected at least the two echo events; got {}", events.len());
+        // total_appends is monotonic and unaffected by ring overwrites.
+        let total = result["total_appends"].as_u64().unwrap();
+        assert!(total >= 2);
+    }
+
+    #[test]
+    fn ws11m1_observability_stats_reports_allow_and_deny_counts() {
+        use acos_authority_types::CallerContext;
+
+        let mut scheme = McpScheme::new();
+
+        // 1. One successful echo (Allow) under anonymous → 1 allow event.
+        let id_echo = scheme.open(b"echo").unwrap();
+        let echo_req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
+        scheme.write(id_echo, echo_req).unwrap();
+
+        // 2. One observability call under anonymous (RequiresCapability) → 1 deny event.
+        let id_obs = scheme.open(b"observability").unwrap();
+        let stats_req = br#"{"jsonrpc":"2.0","method":"stats","params":{},"id":1}"#;
+        scheme.write(id_obs, stats_req).unwrap();
+
+        // 3. Now allowlist a uid and call stats as that caller (which itself
+        //    is a 3rd Allow event by the time the response is built).
+        scheme.capability_policy().allow_uid(1000);
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let id_named = scheme.open_as(b"observability", caller).unwrap();
+        scheme.write(id_named, stats_req).unwrap();
+
+        let mut buf = vec![0u8; 16384];
+        let n = scheme.read(id_named, &mut buf).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+        let result = &response["result"];
+        let allow = result["verdicts"]["allow"].as_u64().unwrap();
+        let deny = result["verdicts"]["deny"].as_u64().unwrap();
+        // At least: echo (allow) + anonymous-observability (deny) +
+        // allowlisted-stats (allow). The handler emits its result before its
+        // own audit event is appended, so the call that produced this
+        // response is NOT counted in its own stats — but the prior two are.
+        assert!(
+            allow >= 1,
+            "expected at least one Allow event in ring; got allow={} deny={}",
+            allow,
+            deny
+        );
+        assert!(
+            deny >= 1,
+            "expected at least one Deny event (anonymous observability); got allow={} deny={}",
+            allow,
+            deny
         );
     }
 
