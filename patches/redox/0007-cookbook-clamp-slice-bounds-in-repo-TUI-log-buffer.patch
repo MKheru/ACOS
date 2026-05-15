@@ -1,0 +1,26 @@
+From 4295179aa78a7563844ab4fda8bcb70103d82797 Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Fri, 15 May 2026 19:52:46 +0000
+Subject: [PATCH 1/2] ACOS: clamp slice bounds in repo TUI log buffer
+
+When the cookbook UI log buffer has fewer entries than the visible panel, the slice at src/bin/repo.rs:1545 produced start>end (start=1, end=0 via total_log_lines-1 underflow), panicking. Clamp end to max(start) with saturating_sub on total_log_lines.
+---
+ src/bin/repo.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/bin/repo.rs b/src/bin/repo.rs
+index 04deef4c..0151ef31 100644
+--- a/src/bin/repo.rs
++++ b/src/bin/repo.rs
+@@ -1542,7 +1542,7 @@ fn run_tui_cook(
+                     }
+                 };
+ 
+-                let end = cmp::min(panel_height + start, total_log_lines - 1);
++                let end = cmp::min(panel_height + start, total_log_lines.saturating_sub(1)).max(start); // ACOS local patch: avoid start>end panic + underflow
+ 
+                 log_text[start..end]
+                     .iter()
+-- 
+2.39.5
+

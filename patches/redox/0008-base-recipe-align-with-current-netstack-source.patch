@@ -1,0 +1,38 @@
+From 6202323f108fb9152eda97df33751928b7959175 Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Fri, 15 May 2026 19:52:46 +0000
+Subject: [PATCH 2/2] ACOS: align base recipe with current netstack source
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+(1) netstack workspace no longer produces a binary named smolnetd — rename cp source to netstack while keeping dest /usr/bin/smolnetd so init scripts work. (2) x86_64 driver case-arch BINS+= referenced removed crates (ac97d/bgad/sb16d, vboxd not needed for QEMU); drop it.
+---
+ recipes/core/base/recipe.toml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/recipes/core/base/recipe.toml b/recipes/core/base/recipe.toml
+index da6805d9..1f93fb3f 100644
+--- a/recipes/core/base/recipe.toml
++++ b/recipes/core/base/recipe.toml
+@@ -18,7 +18,7 @@ done
+     --manifest-path "${COOKBOOK_SOURCE}/netstack/Cargo.toml" \
+     ${build_flags}
+ cp -v \
+-    "target/${TARGET}/${build_type}/smolnetd" \
++    "target/${TARGET}/${build_type}/netstack" \
+     "${COOKBOOK_STAGE}/usr/bin/smolnetd"
+ 
+ # Drivers that are built on all architectures, and NOT in drivers-initfs
+@@ -45,7 +45,7 @@ BINS=(
+ # depending on the target architecture
+ case "${TARGET}" in
+     i586-unknown-redox | i686-unknown-redox | x86_64-unknown-redox)
+-        BINS+=(ac97d bgad sb16d vboxd)
++        BINS+=()  # ACOS local patch: ac97d/bgad/sb16d removed upstream, vboxd not needed for QEMU
+         ;;
+     *)
+         ;;
+-- 
+2.39.5
+
