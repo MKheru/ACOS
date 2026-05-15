@@ -1,0 +1,13 @@
+[package]
+name = "mcpd-authority-shim"
+version = "0.1.0"
+edition = "2021"
+description = "Deny-by-default authority shim + append-only audit ring buffer for ACOS"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+acos-authority-types = { path = "../acos-authority-types" }

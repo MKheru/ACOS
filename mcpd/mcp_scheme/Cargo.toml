@@ -18,6 +18,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 rustc-hash = "2"
+# WS1.M1 — foundation primitive crate (Decision/Capability/HandlerPolicy/...).
+acos-authority-types = { path = "../acos-authority-types" }
+# WS1.M2 — audit ring buffer + bootstrap (wired into McpScheme::write).
+mcpd-authority-shim = { path = "../mcpd-authority-shim" }
 redox-scheme = { version = "0.11", optional = true }
 libredox = { version = "0.1", optional = true }
 syscall = { version = "0.7", optional = true, package = "redox_syscall" }

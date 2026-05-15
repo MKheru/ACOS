@@ -31,6 +31,14 @@ requires_weak 10_net
 scheme mcp mcpd
 """
 
+# Start AI Guardian daemon (consumes MCP services, monitors system)
+[[files]]
+path = "/usr/lib/init.d/16_guardian"
+data = """
+requires_weak 15_mcp
+nowait acos-guardian
+"""
+
 # ACOS boot marker (for QEMU evaluation harness)
 [[files]]
 path = "/usr/lib/init.d/99_acos_ready"

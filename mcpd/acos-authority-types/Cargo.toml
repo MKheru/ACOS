@@ -1,0 +1,12 @@
+[package]
+name = "acos-authority-types"
+version = "0.1.0"
+edition = "2021"
+description = "Authority, capability, decision, and audit primitive types for ACOS"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

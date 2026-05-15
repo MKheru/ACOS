@@ -41,6 +41,11 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 
+// WS1.M4 — Application-defined codes. JSON-RPC reserves the range -32000 to
+// -32099 for "Server error" — implementation-defined application errors.
+/// The request was refused by the authority/capability layer.
+pub const DENIED_BY_POLICY: i64 = -32001;
+
 impl JsonRpcResponse {
     pub fn success(id: Option<Value>, result: Value) -> Self {
         JsonRpcResponse {

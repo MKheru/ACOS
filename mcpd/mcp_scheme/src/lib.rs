@@ -18,6 +18,7 @@
 //! - Write a JSON-RPC request to the file descriptor
 //! - Read the JSON-RPC response back
 
+pub mod dispatch_hub;
 pub mod protocol;
 pub mod router;
 pub mod handler;
@@ -57,6 +58,7 @@ pub mod scheme_bridge;
 pub mod mock;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use rustc_hash::FxHashMap;
 
 /// Maximum number of simultaneous open connections.
@@ -64,6 +66,15 @@ const MAX_CONNECTIONS: usize = 1024;
 
 /// Maximum size of an accumulated request buffer (1 MiB).
 const MAX_REQUEST_SIZE: usize = 1_048_576;
+
+/// WS2.M2 — Anti-Slowloris: max wall-clock between connection open and a
+/// complete JSON-RPC request being parsed. If a connection has data in
+/// `request_buf` and exceeds this, it is reaped.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// WS2.M2 — Idle timeout: max wall-clock without any read/write activity.
+/// Caught at the next entry into `open`/`read`/`write` (no concurrent reaper).
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// A unique handle for an open MCP connection
 pub type HandleId = usize;
@@ -116,14 +127,30 @@ pub struct McpScheme {
     next_id: HandleId,
     /// Registered service handlers (Arc for internal dispatch by AiHandler)
     router: std::sync::Arc<router::Router>,
+    /// WS1.M2 — Authority shim with append-only audit ring buffer.
+    /// Every `write` that reaches the router emits an `AuditEvent` here so
+    /// the scheme has an observable history of dispatches even before
+    /// `CallerContext` lands (WS2.M3) and decisions become non-trivial.
+    shim: std::sync::Arc<mcpd_authority_shim::AuthorityShim>,
+    /// Monotonic trace id generator. Wraps at u128::MAX — practically
+    /// inexhaustible.
+    next_trace_id: u128,
 }
 
-/// An active MCP connection
+/// An active MCP connection.
+///
+/// `created_at` and `last_activity` are filled by [`McpScheme::open`] and
+/// updated on every successful read/write so the reaper can identify
+/// stuck/leaked connections without scanning by hand.
 struct McpConnection {
     path: McpPath,
     request_buf: Vec<u8>,
     response_buf: Vec<u8>,
     response_pos: usize,
+    /// When this connection was opened (used for `READ_TIMEOUT`).
+    created_at: Instant,
+    /// Last successful read or write (used for `IDLE_TIMEOUT`).
+    last_activity: Instant,
 }
 
 impl McpScheme {
@@ -140,7 +167,7 @@ impl McpScheme {
         router.register("log", LogHandler::new());
         router.register("config", ConfigHandler::new());
         router.register("echo", handler::EchoHandler::new());
-        router.register("mcp", handler::McpHandler::new()); // Replaced with dispatch version below
+        // NOTE: "mcp" is registered later with dispatch (no placeholder needed)
         router.register("command", CommandHandler::new());
         router.register("service", ServiceManagerHandler::new());
         router.register("net", NetHandler::new());
@@ -165,79 +192,119 @@ impl McpScheme {
         // AI konsole bridge for writing AI activity to Konsole 0
         let ai_bridge = std::sync::Arc::new(ai_konsole_bridge::AiKonsoleBridge::new(konsole_state));
 
-        // Wrap router in Arc for internal dispatch (avoids deadlock)
-        let router = std::sync::Arc::new(router);
+        // WS2.M1: register handlers that need to dispatch back into the Router
+        // BEFORE wrapping it in Arc. Each handler captures a `DispatchHub` clone;
+        // the hub is bound to the Router by `Weak` reference after the Arc wrap.
+        // This replaces the prior `unsafe { (*router_ptr).register(...) }` pattern
+        // that cast `Arc::as_ptr` to `*mut Router` and mutated through it.
+        let hub = dispatch_hub::DispatchHub::new();
 
-        // Register AI handler with internal dispatch via Arc<Router>
-        let router_clone_ai = std::sync::Arc::clone(&router);
+        let hub_ai = hub.clone();
         let dispatch_ai: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
-                router_clone_ai.dispatch(service, method, params)
+                hub_ai.dispatch(service, method, params)
             });
+        router.register("ai", AiHandler::new(dispatch_ai, Some(ai_bridge)));
 
-        // Dispatch for talk handler
-        let router_clone_talk = std::sync::Arc::clone(&router);
+        let hub_talk = hub.clone();
         let dispatch_talk: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
-                router_clone_talk.dispatch(service, method, params)
+                hub_talk.dispatch(service, method, params)
             });
+        router.register("talk", TalkHandler::new(dispatch_talk));
 
-        // Dispatch for guardian handler
-        let router_clone_guardian = std::sync::Arc::clone(&router);
+        let hub_guardian = hub.clone();
         let dispatch_guardian: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
-                router_clone_guardian.dispatch(service, method, params)
+                hub_guardian.dispatch(service, method, params)
             });
+        router.register("guardian", GuardianHandler::new(dispatch_guardian));
 
-        // Dispatch for llm handler
-        let router_clone_llm = std::sync::Arc::clone(&router);
+        let hub_llm = hub.clone();
         let dispatch_llm: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
-                router_clone_llm.dispatch(service, method, params)
+                hub_llm.dispatch(service, method, params)
             });
+        router.register("llm", LlmHandler::new(dispatch_llm));
 
-        // We need to insert AiHandler into the Arc<Router> — use unsafe or reconstruct.
-        // Since Arc::get_mut fails (we have router_clone), we use register_service via
-        // a brief unsafe approach: we know router_clone is not being used concurrently yet.
-        // Alternative: use the router's interior mutability or reconstruct.
-        //
-        // Simplest safe approach: drop the clone, get_mut, re-create the clone.
-        // But we already moved router_clone into the closure...
-        //
-        // Better approach: Use a two-phase init with Option<Arc<Router>> in AiHandler.
-        // But simplest working fix: store dispatch in a separate Arc<Mutex> and set it after.
-
-        // Actually, let's just reconstruct: build a new router with AI included.
-        // We can't easily add to Arc<Router> after cloning. Instead, use a raw pointer
-        // approach that's safe because we're still in single-threaded init.
-        let router_ptr = std::sync::Arc::as_ptr(&router) as *mut router::Router;
-        // SAFETY: We are in single-threaded init, no other references are actively used.
-        // The closures capture their respective router clones but won't be called until after init completes.
-        // Dispatch for mcp handler (services/list needs to probe other services)
-        let router_clone_mcp = std::sync::Arc::clone(&router);
+        let hub_mcp = hub.clone();
         let dispatch_mcp: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
-                router_clone_mcp.dispatch(service, method, params)
+                hub_mcp.dispatch(service, method, params)
             });
+        router.register("mcp", handler::McpHandler::new_with_dispatch(dispatch_mcp));
 
-        unsafe {
-            (*router_ptr).register("ai", AiHandler::new(dispatch_ai, Some(ai_bridge)));
-            (*router_ptr).register("talk", TalkHandler::new(dispatch_talk));
-            (*router_ptr).register("guardian", GuardianHandler::new(dispatch_guardian));
-            (*router_ptr).register("llm", LlmHandler::new(dispatch_llm));
-            // Re-register mcp with dispatch for services/list
-            (*router_ptr).register("mcp", handler::McpHandler::new_with_dispatch(dispatch_mcp));
-        }
+        // Wrap router in Arc, then bind hub. No `unsafe` block needed.
+        let router = std::sync::Arc::new(router);
+        hub.bind(&router);
 
         McpScheme {
             connections: FxHashMap::default(),
             next_id: 1,
             router,
+            shim: std::sync::Arc::new(mcpd_authority_shim::AuthorityShim::new()),
+            next_trace_id: 1,
         }
+    }
+
+    /// WS1.M2 — Borrow the authority shim (for snapshots, debugging, or
+    /// future capability-layer wiring by callers that own the `McpScheme`).
+    pub fn authority_shim(&self) -> &std::sync::Arc<mcpd_authority_shim::AuthorityShim> {
+        &self.shim
+    }
+
+    /// Produce a fresh trace id for the next dispatch. Internal helper —
+    /// kept private but reusable from tests via `audit_snapshot()`.
+    fn allocate_trace_id(&mut self) -> u128 {
+        let id = self.next_trace_id;
+        self.next_trace_id = self.next_trace_id.wrapping_add(1);
+        if self.next_trace_id == 0 {
+            self.next_trace_id = 1;
+        }
+        id
+    }
+
+    /// Build an [`AuditEvent`] from a request/response pair and append it to
+    /// the shim's ring. Treats `DENIED_BY_POLICY` as a `Deny` verdict and any
+    /// other outcome (success or other error) as `Allow` for now — the full
+    /// verdict mapping arrives with the capability fabric (WS3).
+    fn audit_route(
+        &self,
+        trace_id: u128,
+        connection_id: HandleId,
+        action: &str,
+        response: &protocol::JsonRpcResponse,
+        latency_us: u64,
+    ) {
+        use acos_authority_types::{AuditEvent, DenyCode, Verdict};
+        let verdict = match response.error.as_ref() {
+            Some(err) if err.code == protocol::DENIED_BY_POLICY => {
+                Verdict::Deny(DenyCode::PolicyForbids)
+            }
+            _ => Verdict::Allow,
+        };
+        let event = AuditEvent::new(
+            trace_id,
+            format!("session-{}", connection_id),
+            action.to_string(),
+            verdict,
+            None,
+            latency_us,
+        );
+        // Fail-quiet: if the ring buffer is poisoned or zero-capacity we
+        // already returned the response to the caller. Logging this would
+        // require yet another channel; for now we drop the audit event and
+        // rely on the ring's `total_appends` counter (which is unaffected
+        // by drops) for monitoring gaps.
+        let _ = self.shim.record(event);
     }
 
     /// Open a new connection to an MCP resource
     pub fn open(&mut self, path: &[u8]) -> Result<HandleId, i32> {
+        // WS2.M2 — Reap expired connections before enforcing the MAX_CONNECTIONS
+        // limit so stale partial-request Slowloris peers can't keep the table full.
+        self.reap_expired_connections(Instant::now());
+
         let mcp_path = McpPath::parse(path).ok_or(-libc::ENOENT)?;
 
         // Verify the service exists
@@ -273,64 +340,131 @@ impl McpScheme {
             self.next_id = 1;
         }
 
+        let now = Instant::now();
         self.connections.insert(id, McpConnection {
             path: mcp_path,
             request_buf: Vec::new(),
             response_buf: Vec::new(),
             response_pos: 0,
+            created_at: now,
+            last_activity: now,
         });
 
         Ok(id)
     }
 
-    /// Write a JSON-RPC request to the connection
+    /// WS2.M2 — Reap connections that have exceeded their timeouts.
+    ///
+    /// Two conditions trigger reaping:
+    /// 1. A partial request has been buffered for longer than [`READ_TIMEOUT`]
+    ///    (Slowloris protection: caller writes a tiny piece every few seconds
+    ///    to keep `request_buf` alive).
+    /// 2. The connection has been silent (no read/write) for longer than
+    ///    [`IDLE_TIMEOUT`] (cleanup of leaked handles).
+    ///
+    /// Called from `open`/`read`/`write` entry points — there is no concurrent
+    /// reaper task, so this runs lazily on the next API call.
+    ///
+    /// `pub(crate)` so timeout tests can inject a synthetic future `Instant`
+    /// without `thread::sleep`.
+    pub(crate) fn reap_expired_connections(&mut self, now: Instant) {
+        self.connections.retain(|_, conn| {
+            if !conn.request_buf.is_empty()
+                && now.saturating_duration_since(conn.created_at) > READ_TIMEOUT
+            {
+                return false;
+            }
+            if now.saturating_duration_since(conn.last_activity) > IDLE_TIMEOUT {
+                return false;
+            }
+            true
+        });
+    }
+
+    /// Write a JSON-RPC request to the connection.
+    ///
+    /// Structure: (a) gather request + path while holding `&mut conn`,
+    /// (b) drop the conn borrow before dispatching/auditing (which need
+    /// `&mut self`), (c) re-acquire conn to write the response buffer.
     pub fn write(&mut self, id: HandleId, buf: &[u8]) -> Result<usize, i32> {
-        let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
+        // WS2.M2 — Reap expired connections lazily at every entry point.
+        let now = Instant::now();
+        self.reap_expired_connections(now);
 
-        // Common case: no partial data buffered — parse directly from input (avoids copy)
-        if conn.request_buf.is_empty() {
-            if let Ok(request) = serde_json::from_slice::<protocol::JsonRpcRequest>(buf) {
-                let response = self.router.route(&conn.path, &request);
-                conn.response_buf.clear();
-                // F5: Handle serialization failure with a JSON-RPC error response
-                if serde_json::to_writer(&mut conn.response_buf, &response).is_err() {
-                    conn.response_buf.clear();
-                    conn.response_buf.extend_from_slice(
-                        b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}"
-                    );
+        // -- Phase 1 : gather request + path under conn borrow ----------------
+        let (path_clone, request) = {
+            let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
+            conn.last_activity = now;
+
+            // Fast path: parse directly from input when nothing is buffered.
+            if conn.request_buf.is_empty() {
+                match serde_json::from_slice::<protocol::JsonRpcRequest>(buf) {
+                    Ok(req) => (conn.path.clone(), req),
+                    Err(_) => {
+                        // Not a complete JSON yet — fall through to slow path.
+                        // F1: enforce buffer cap before extending.
+                        if conn.request_buf.len() + buf.len() > MAX_REQUEST_SIZE {
+                            conn.request_buf.clear();
+                            return Err(-libc::ENOMEM);
+                        }
+                        conn.request_buf.extend_from_slice(buf);
+                        match serde_json::from_slice::<protocol::JsonRpcRequest>(&conn.request_buf) {
+                            Ok(req) => {
+                                let p = conn.path.clone();
+                                conn.request_buf.clear();
+                                (p, req)
+                            }
+                            Err(_) => return Ok(buf.len()),
+                        }
+                    }
                 }
-                conn.response_pos = 0;
-                return Ok(buf.len());
+            } else {
+                // Slow path: append to accumulator and attempt to parse.
+                if conn.request_buf.len() + buf.len() > MAX_REQUEST_SIZE {
+                    conn.request_buf.clear();
+                    return Err(-libc::ENOMEM);
+                }
+                conn.request_buf.extend_from_slice(buf);
+                match serde_json::from_slice::<protocol::JsonRpcRequest>(&conn.request_buf) {
+                    Ok(req) => {
+                        let p = conn.path.clone();
+                        conn.request_buf.clear();
+                        (p, req)
+                    }
+                    Err(_) => return Ok(buf.len()),
+                }
             }
-        }
+        }; // conn borrow released here
 
-        // Slow path: accumulate partial writes
-        // F1: Enforce max request buffer size to prevent unbounded memory growth
-        if conn.request_buf.len() + buf.len() > MAX_REQUEST_SIZE {
-            conn.request_buf.clear();
-            return Err(-libc::ENOMEM);
-        }
-        conn.request_buf.extend_from_slice(buf);
-        if let Ok(request) = serde_json::from_slice::<protocol::JsonRpcRequest>(&conn.request_buf) {
-            let response = self.router.route(&conn.path, &request);
+        // -- Phase 2 : dispatch + audit (need &mut self) ----------------------
+        let trace_id = self.allocate_trace_id();
+        let start = Instant::now();
+        let action = format!("{}.{}", path_clone.service, request.method);
+        let response = self.router.route(&path_clone, &request);
+        let latency_us = start.elapsed().as_micros() as u64;
+        self.audit_route(trace_id, id, &action, &response, latency_us);
+
+        // -- Phase 3 : write response_buf under fresh conn borrow -------------
+        let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
+        conn.response_buf.clear();
+        // F5: Handle serialization failure with a JSON-RPC error response
+        if serde_json::to_writer(&mut conn.response_buf, &response).is_err() {
             conn.response_buf.clear();
-            // F5: Handle serialization failure with a JSON-RPC error response
-            if serde_json::to_writer(&mut conn.response_buf, &response).is_err() {
-                conn.response_buf.clear();
-                conn.response_buf.extend_from_slice(
-                    b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}"
-                );
-            }
-            conn.response_pos = 0;
-            conn.request_buf.clear();
+            conn.response_buf.extend_from_slice(
+                b"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}"
+            );
         }
-
+        conn.response_pos = 0;
         Ok(buf.len())
     }
 
     /// Read a JSON-RPC response from the connection
     pub fn read(&mut self, id: HandleId, buf: &mut [u8]) -> Result<usize, i32> {
+        let now = Instant::now();
+        self.reap_expired_connections(now);
+
         let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
+        conn.last_activity = now;
 
         if conn.response_pos >= conn.response_buf.len() {
             return Ok(0); // No data available
@@ -3825,5 +3959,122 @@ mod tests {
         let handle = scheme.open(b"echo").unwrap();
         scheme.close(handle).unwrap();
         assert_eq!(scheme.close(handle), Err(-libc::EBADF));
+    }
+
+    // -------------------------------------------------------------------
+    // WS2.M2 — Anti-Slowloris connection timeouts
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ws2m2_partial_json_expires_after_read_timeout() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        // Write incomplete JSON so request_buf has unparsed bytes.
+        let _ = scheme.write(id, b"{\"jsonrpc\":\"2.0\",\"method\":");
+        // Synthetic future Instant past READ_TIMEOUT.
+        let future = Instant::now() + READ_TIMEOUT + Duration::from_secs(1);
+        scheme.reap_expired_connections(future);
+        // The handle must be gone now.
+        let mut buf = [0u8; 16];
+        assert_eq!(scheme.read(id, &mut buf), Err(-libc::EBADF));
+    }
+
+    #[test]
+    fn ws2m2_complete_json_before_timeout_survives() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        // A complete request leaves request_buf empty after processing.
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{"message":"hi"},"id":1}"#;
+        scheme.write(id, req).unwrap();
+        // Even far past READ_TIMEOUT, no partial buf → no reap.
+        let future = Instant::now() + READ_TIMEOUT + Duration::from_secs(5);
+        scheme.reap_expired_connections(future);
+        assert!(scheme.close(id).is_ok());
+    }
+
+    #[test]
+    fn ws2m2_idle_connection_expires_after_idle_timeout() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        // No buffered request. Jump past IDLE_TIMEOUT.
+        let future = Instant::now() + IDLE_TIMEOUT + Duration::from_secs(1);
+        scheme.reap_expired_connections(future);
+        let mut buf = [0u8; 16];
+        assert_eq!(scheme.read(id, &mut buf), Err(-libc::EBADF));
+    }
+
+    #[test]
+    fn ws2m2_reap_does_not_remove_recent_active_connection() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        // 50 ms later — well below either timeout.
+        scheme.reap_expired_connections(Instant::now() + Duration::from_millis(50));
+        assert!(scheme.close(id).is_ok());
+    }
+
+    // -------------------------------------------------------------------
+    // WS1.M2 — AuthorityShim wired into McpScheme::write
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn ws1m2_audit_ring_records_event_on_each_write() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{"x":1},"id":1}"#;
+        scheme.write(id, req).unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        assert_eq!(snap.len(), 1, "expected one audit entry after one write");
+        assert_eq!(snap[0].action, "echo.echo");
+        assert_eq!(snap[0].trace_id, 1);
+        // caller is the session-prefixed handle id we assigned.
+        assert!(snap[0].caller.starts_with("session-"));
+    }
+
+    #[test]
+    fn ws1m2_audit_ring_accumulates_across_writes_with_monotonic_trace_ids() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        let req = br#"{"jsonrpc":"2.0","method":"echo","params":{},"id":1}"#;
+        scheme.write(id, req).unwrap();
+        scheme.write(id, req).unwrap();
+        scheme.write(id, req).unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        assert_eq!(snap.len(), 3);
+        let ids: Vec<u128> = snap.iter().map(|e| e.trace_id).collect();
+        assert_eq!(ids, vec![1, 2, 3], "trace ids must increment strictly");
+        // total_appends counter is monotonic regardless of overwrites.
+        assert_eq!(scheme.authority_shim().audit_ring().total_appends(), 3);
+    }
+
+    #[test]
+    fn ws1m2_audit_does_not_record_on_partial_write() {
+        let mut scheme = McpScheme::new();
+        let id = scheme.open(b"echo").unwrap();
+        // Only half a JSON object — no dispatch, no audit.
+        scheme.write(id, b"{\"jsonrpc\":\"2.0\",\"method\":").unwrap();
+
+        let snap = scheme.authority_shim().audit_ring().snapshot();
+        assert_eq!(snap.len(), 0, "partial JSON must not produce an audit event");
+    }
+
+    #[test]
+    fn ws2m2_reaper_makes_room_under_max_connections() {
+        // Slowloris vector: attacker holds MAX_CONNECTIONS open. Reaper should
+        // free expired slots so legitimate clients can still connect.
+        let mut scheme = McpScheme::new();
+        let mut held = Vec::with_capacity(MAX_CONNECTIONS);
+        for _ in 0..MAX_CONNECTIONS {
+            held.push(scheme.open(b"echo").unwrap());
+        }
+        // Table full → next open is ENOMEM (no time-jump yet).
+        assert_eq!(scheme.open(b"echo"), Err(-libc::ENOMEM));
+        // Time-jump past IDLE_TIMEOUT and reap — frees all expired slots.
+        let future = Instant::now() + IDLE_TIMEOUT + Duration::from_secs(1);
+        scheme.reap_expired_connections(future);
+        // Now there's room for a fresh client.
+        let new_id = scheme.open(b"echo").unwrap();
+        assert!(scheme.close(new_id).is_ok());
     }
 }

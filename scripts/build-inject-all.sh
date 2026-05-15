@@ -142,6 +142,11 @@ if [ ! -f "$MOUNT_POINT/usr/lib/init.d/15_mcp" ]; then
     echo "  Created 15_mcp init script"
 fi
 
+if [ ! -f "$MOUNT_POINT/usr/lib/init.d/16_guardian" ]; then
+    printf 'requires_weak 15_mcp\nnowait acos-guardian\n' > "$MOUNT_POINT/usr/lib/init.d/16_guardian"
+    echo "  Created 16_guardian init script"
+fi
+
 if [ ! -f "$MOUNT_POINT/usr/lib/init.d/99_acos_ready" ]; then
     printf 'echo ACOS_BOOT_OK\n' > "$MOUNT_POINT/usr/lib/init.d/99_acos_ready"
     echo "  Created 99_acos_ready init script"

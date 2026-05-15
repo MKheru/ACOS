@@ -55,7 +55,7 @@ impl LlmHandler {
 impl ServiceHandler for LlmHandler {
     fn handle(&self, _path: &McpPath, request: &JsonRpcRequest) -> JsonRpcResponse {
         match request.method.as_str() {
-            "generate" | "stream" => {
+            "generate" => {
                 let prompt = match request.params.get("prompt").and_then(|v| v.as_str()) {
                     Some(p) if !p.is_empty() && p.len() <= MAX_PROMPT_LEN => p,
                     Some(p) if p.is_empty() => return JsonRpcResponse::error(
@@ -146,7 +146,7 @@ impl ServiceHandler for LlmHandler {
     }
 
     fn list_methods(&self) -> Vec<&str> {
-        vec!["generate", "info", "stream"]
+        vec!["generate", "info"]
     }
 }
 
@@ -306,14 +306,16 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, METHOD_NOT_FOUND);
     }
 
-    // --- Test 10: stream method works like generate ---
+    // --- Test 10: stream method is not advertised (WS12 B2 — no fake streaming) ---
     #[test]
-    fn test_stream_method() {
+    fn test_stream_not_advertised_without_streaming_impl() {
         let handler = LlmHandler::new(mock_dispatch());
         let req = make_request("stream", json!({"prompt": "Hi"}));
         let resp = handler.handle(&path(), &req);
-        let result = resp.result.unwrap();
-        assert_eq!(result["text"], "mock response");
+        assert!(resp.error.is_some(), "stream method must not be served");
+        assert_eq!(resp.error.unwrap().code, METHOD_NOT_FOUND);
+        assert!(!handler.list_methods().contains(&"stream"),
+            "list_methods must not advertise stream until real SSE/chunked streaming exists");
     }
 
     // --- Test 11: max_tokens is capped at 2048 ---
@@ -366,6 +368,7 @@ mod tests {
         let methods = handler.list_methods();
         assert!(methods.contains(&"generate"));
         assert!(methods.contains(&"info"));
-        assert!(methods.contains(&"stream"));
+        assert!(!methods.contains(&"stream"),
+            "stream removed per WS12 B2 — no fake streaming without real SSE/chunked impl");
     }
 }

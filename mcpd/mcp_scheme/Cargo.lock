@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acos-authority-types"
+version = "0.1.0"
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -36,13 +40,22 @@ dependencies = [
 name = "mcp-scheme"
 version = "0.1.0"
 dependencies = [
+ "acos-authority-types",
  "libc",
  "libredox",
+ "mcpd-authority-shim",
  "redox-scheme",
  "redox_syscall",
  "rustc-hash",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "mcpd-authority-shim"
+version = "0.1.0"
+dependencies = [
+ "acos-authority-types",
 ]
 
 [[package]]

@@ -2,6 +2,8 @@
 
 use serde_json::json;
 
+pub use acos_authority_types::HandlerPolicy;
+
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, METHOD_NOT_FOUND};
 use crate::McpPath;
 
@@ -12,6 +14,21 @@ pub trait ServiceHandler: Send + Sync {
 
     /// List available methods for this service
     fn list_methods(&self) -> Vec<&str>;
+
+    /// WS1.M3 — Declare the access policy required to invoke `method`.
+    ///
+    /// Default is [`HandlerPolicy::Public`] so the introduction of this
+    /// trait method is non-breaking: every existing handler keeps its
+    /// previous "anyone may call" semantics until it explicitly opts into
+    /// `RequiresCapability` or `GuardianOnly` for individual methods.
+    ///
+    /// The router calls this *before* dispatching, and refuses with
+    /// `DENIED_BY_POLICY` when the policy is not yet supported by the
+    /// authority layer (the full capability/scope check arrives with
+    /// WS1.M2's `mcpd-authority-shim`).
+    fn required_policy(&self, _method: &str) -> HandlerPolicy {
+        HandlerPolicy::Public
+    }
 }
 
 // ---------------------------------------------------------------------------

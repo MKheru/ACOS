@@ -206,6 +206,36 @@ pub struct Anomaly {
 }
 
 impl Anomaly {
+    /// WS9.M5 — Mark this anomaly as resolved atomically. Once resolved,
+    /// further calls return `Err` (monotonic transition).
+    ///
+    /// Replaces the prior pattern of three separate field writes
+    /// (`anomaly.resolved = true; anomaly.resolution = Some(...);
+    /// anomaly.user_response = Some(...)`), removing the window where an
+    /// `Anomaly` could be observed in a partial state, and providing a
+    /// single point at which the future append-only audit emission will
+    /// be wired (see [`mcpd_authority_shim::AuthorityShim`]).
+    pub fn resolve(
+        &mut self,
+        resolution: String,
+        user_response: UserResponse,
+    ) -> Result<(), &'static str> {
+        if self.resolved {
+            return Err("anomaly already resolved");
+        }
+        self.resolved = true;
+        self.resolution = Some(resolution);
+        self.user_response = Some(user_response);
+        Ok(())
+    }
+
+    /// WS9.M5 — Record an AI consultation outcome. Independent of
+    /// resolution: an anomaly can carry AI advice without yet being
+    /// resolved, and a resolution can occur without AI input.
+    pub fn set_ai_consultation(&mut self, advice: String) {
+        self.ai_consultation = Some(advice);
+    }
+
     fn to_json(&self) -> Value {
         let mut obj = json!({
             "id": self.id,
@@ -690,7 +720,15 @@ impl GuardianHandler {
 
         let respond_ts = self.timestamp();
 
-        let action_taken = match &choice {
+        // WS9.M5 — Compute (resolution_msg, action_taken) without mutating
+        // `anomaly`; both come from the same input but read differently:
+        // - resolution_msg ends up in `anomaly.resolution` (the audit-style
+        //   record of *why* the anomaly was closed)
+        // - action_taken is returned in the response to the user (a
+        //   human-facing description of *what* the system actually did)
+        // For ApplyFix and Ignore the two strings happen to be identical;
+        // for GiveInstructions they intentionally differ.
+        let (resolution_msg, action_taken) = match &choice {
             ResponseChoice::ApplyFix => {
                 // Execute remediation based on anomaly type
                 let action = match &anomaly.anomaly_type {
@@ -754,28 +792,37 @@ impl GuardianHandler {
                         format!("blocked unauthorized connection to {}:{}", host, port)
                     }
                 };
-                anomaly.resolved = true;
-                anomaly.resolution = Some(action.clone());
-                action
+                (action.clone(), action)
             }
             ResponseChoice::Ignore => {
-                anomaly.resolved = true;
-                anomaly.resolution = Some("ignored by user".to_string());
-                "ignored by user".to_string()
+                let msg = "ignored by user".to_string();
+                (msg.clone(), msg)
             }
             ResponseChoice::GiveInstructions => {
                 let instr = instructions.clone().unwrap_or_default();
-                anomaly.resolved = true;
-                anomaly.resolution = Some(format!("user instructions: {}", instr));
-                format!("recorded instructions: {}", instr)
+                (
+                    format!("user instructions: {}", instr),
+                    format!("recorded instructions: {}", instr),
+                )
             }
         };
 
-        anomaly.user_response = Some(UserResponse {
+        // WS9.M5 — Atomic resolution: previously three separate field writes
+        // (resolved/resolution/user_response); now one method call enforcing
+        // "one-shot" monotonic transition. The `if anomaly.resolved { return }`
+        // guard above already prevents double-resolve; this is defence in depth.
+        let user_response = UserResponse {
             choice,
             instructions,
             responded_at: respond_ts,
-        });
+        };
+        if let Err(e) = anomaly.resolve(resolution_msg, user_response) {
+            return JsonRpcResponse::error(
+                request.id.clone(),
+                INVALID_PARAMS,
+                format!("cannot resolve anomaly {}: {}", anomaly_id, e),
+            );
+        }
 
         JsonRpcResponse::success(
             request.id.clone(),
@@ -847,6 +894,19 @@ impl GuardianHandler {
                     }
                     "enabled" => {
                         if let Some(b) = v.as_bool() {
+                            if !b {
+                                // WS9.M6 — Refuse to disable Guardian via the
+                                // config API. Disabling the security monitor
+                                // is the canonical first step of a privilege
+                                // escalation; the only legitimate way to stop
+                                // Guardian is to terminate the process (which
+                                // itself requires sufficient host privileges).
+                                return JsonRpcResponse::error(
+                                    request.id.clone(),
+                                    INVALID_PARAMS,
+                                    "cannot disable Guardian via config API",
+                                );
+                            }
                             config.enabled = b;
                         } else {
                             return JsonRpcResponse::error(
@@ -1369,7 +1429,7 @@ impl GuardianHandler {
         if let Some(aid) = anomaly_id_opt {
             let mut anomalies = self.anomalies.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(a) = anomalies.iter_mut().find(|a| a.id == aid) {
-                a.ai_consultation = Some(format!("action={}, reasoning={}", action, reasoning));
+                a.set_ai_consultation(format!("action={}, reasoning={}", action, reasoning));
             }
         }
 
@@ -2625,5 +2685,139 @@ mod tests {
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert!(result.get("action_taken").unwrap().as_str().unwrap().contains("high traffic"));
+    }
+
+    // -------------------------------------------------------------------
+    // WS9.M5 — Anomaly atomic resolution + monotonic transition
+    // -------------------------------------------------------------------
+
+    fn fresh_anomaly() -> Anomaly {
+        Anomaly {
+            id: 1,
+            anomaly_type: AnomalyType::ProcessCrash {
+                name: "test-proc".to_string(),
+                pid: 42,
+            },
+            severity: Severity::Warning,
+            description: "test".to_string(),
+            detected_at: "2026-01-01T00:00:00Z".to_string(),
+            resolved: false,
+            resolution: None,
+            user_response: None,
+            ai_consultation: None,
+        }
+    }
+
+    fn fresh_user_response() -> UserResponse {
+        UserResponse {
+            choice: ResponseChoice::ApplyFix,
+            instructions: None,
+            responded_at: "2026-01-01T00:00:01Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn ws9m5_resolve_sets_three_fields_atomically() {
+        let mut a = fresh_anomaly();
+        assert!(!a.resolved);
+        assert!(a.resolution.is_none());
+        assert!(a.user_response.is_none());
+
+        a.resolve("fixed-it".to_string(), fresh_user_response()).unwrap();
+
+        assert!(a.resolved);
+        assert_eq!(a.resolution.as_deref(), Some("fixed-it"));
+        assert!(a.user_response.is_some());
+    }
+
+    #[test]
+    fn ws9m5_resolve_is_one_shot_second_call_errors() {
+        let mut a = fresh_anomaly();
+        a.resolve("first".to_string(), fresh_user_response()).unwrap();
+
+        let second = a.resolve("second".to_string(), fresh_user_response());
+        assert!(second.is_err(), "double resolve must be rejected");
+        // Resolution data must still be the first attempt's payload.
+        assert_eq!(a.resolution.as_deref(), Some("first"));
+    }
+
+    // -------------------------------------------------------------------
+    // WS9.M6 — `config.enabled=false` refused (privilege escalation guard)
+    // -------------------------------------------------------------------
+
+    fn read_config_field(handler: &GuardianHandler, field: &str) -> Value {
+        let req = make_request("config", json!({}));
+        let resp = handler.handle(&path(), &req);
+        resp.result
+            .expect("config get must succeed")
+            .get("config")
+            .expect("config response must contain `config`")
+            .get(field)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn ws9m6_setting_enabled_false_is_refused() {
+        let handler = GuardianHandler::new(mock_dispatch());
+        // Sanity: default config has enabled=true.
+        assert_eq!(read_config_field(&handler, "enabled"), json!(true));
+
+        // The escalation attempt.
+        let req = make_request("config", json!({"key": "enabled", "value": false}));
+        let resp = handler.handle(&path(), &req);
+        let err = resp.error.expect("setting enabled=false must be refused");
+        assert!(
+            err.message.contains("cannot disable Guardian"),
+            "unexpected message: {}",
+            err.message
+        );
+
+        // Config unchanged.
+        assert_eq!(
+            read_config_field(&handler, "enabled"),
+            json!(true),
+            "config.enabled must not have been mutated"
+        );
+    }
+
+    #[test]
+    fn ws9m6_setting_enabled_true_is_accepted() {
+        let handler = GuardianHandler::new(mock_dispatch());
+        let req = make_request("config", json!({"key": "enabled", "value": true}));
+        let resp = handler.handle(&path(), &req);
+        assert!(resp.error.is_none(), "setting enabled=true must succeed; got {:?}", resp.error);
+        assert_eq!(read_config_field(&handler, "enabled"), json!(true));
+    }
+
+    #[test]
+    fn ws9m6_network_monitoring_false_is_still_allowed() {
+        // WS9.M6 only blocks the master `enabled` toggle. Sub-toggles like
+        // `network_monitoring` remain runtime-mutable for legitimate dev/diag.
+        let handler = GuardianHandler::new(mock_dispatch());
+        let req = make_request("config", json!({"key": "network_monitoring", "value": false}));
+        let resp = handler.handle(&path(), &req);
+        assert!(
+            resp.error.is_none(),
+            "network_monitoring toggle must remain mutable; got {:?}",
+            resp.error
+        );
+        assert_eq!(read_config_field(&handler, "network_monitoring"), json!(false));
+    }
+
+    #[test]
+    fn ws9m5_set_ai_consultation_is_independent_of_resolution() {
+        let mut a = fresh_anomaly();
+        a.set_ai_consultation("model says restart it".to_string());
+        assert_eq!(a.ai_consultation.as_deref(), Some("model says restart it"));
+        // ai_consultation must NOT mark the anomaly as resolved.
+        assert!(!a.resolved);
+        assert!(a.resolution.is_none());
+
+        // And resolution after AI consultation works normally.
+        a.resolve("done".to_string(), fresh_user_response()).unwrap();
+        assert!(a.resolved);
+        // AI advice survives the resolution.
+        assert_eq!(a.ai_consultation.as_deref(), Some("model says restart it"));
     }
 }
