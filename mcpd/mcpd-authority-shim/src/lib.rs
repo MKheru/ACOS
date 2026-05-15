@@ -30,8 +30,10 @@
 
 mod audit_ring;
 mod bootstrap;
+mod policy;
 mod shim;
 
 pub use audit_ring::{AuditRing, AuditRingError};
 pub use bootstrap::{CapabilityZeroBootstrap, CapabilityZeroError};
+pub use policy::CapabilityPolicy;
 pub use shim::AuthorityShim;

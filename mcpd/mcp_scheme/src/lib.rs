@@ -132,6 +132,10 @@ pub struct McpScheme {
     /// the scheme has an observable history of dispatches even before
     /// `CallerContext` lands (WS2.M3) and decisions become non-trivial.
     shim: std::sync::Arc<mcpd_authority_shim::AuthorityShim>,
+    /// WS2.M3 phase 2 — Capability evaluator consulted by the router when
+    /// a handler declares a method as non-Public. Deny-by-default; uids
+    /// must be allowlisted via [`McpScheme::capability_policy`].
+    policy: std::sync::Arc<mcpd_authority_shim::CapabilityPolicy>,
     /// Monotonic trace id generator. Wraps at u128::MAX — practically
     /// inexhaustible.
     next_trace_id: u128,
@@ -248,6 +252,7 @@ impl McpScheme {
             next_id: 1,
             router,
             shim: std::sync::Arc::new(mcpd_authority_shim::AuthorityShim::new()),
+            policy: std::sync::Arc::new(mcpd_authority_shim::CapabilityPolicy::new()),
             next_trace_id: 1,
         }
     }
@@ -256,6 +261,13 @@ impl McpScheme {
     /// future capability-layer wiring by callers that own the `McpScheme`).
     pub fn authority_shim(&self) -> &std::sync::Arc<mcpd_authority_shim::AuthorityShim> {
         &self.shim
+    }
+
+    /// WS2.M3 phase 2 — Borrow the capability policy (mutable through
+    /// interior `RwLock` — call `allow_uid` / `revoke_uid` to manage the
+    /// allowlist at boot or in response to a Guardian decision).
+    pub fn capability_policy(&self) -> &std::sync::Arc<mcpd_authority_shim::CapabilityPolicy> {
+        &self.policy
     }
 
     /// Produce a fresh trace id for the next dispatch. Internal helper —
@@ -423,16 +435,17 @@ impl McpScheme {
         self.reap_expired_connections(now);
 
         // -- Phase 1 : gather request + path + caller under conn borrow ------
-        let (path_clone, request, caller_label) = {
+        let (path_clone, request, caller_label, caller_ctx) = {
             let conn = self.connections.get_mut(&id).ok_or(-libc::EBADF)?;
             conn.last_activity = now;
 
             let label = conn.caller.label();
+            let caller = conn.caller;
 
             // Fast path: parse directly from input when nothing is buffered.
             if conn.request_buf.is_empty() {
                 match serde_json::from_slice::<protocol::JsonRpcRequest>(buf) {
-                    Ok(req) => (conn.path.clone(), req, label),
+                    Ok(req) => (conn.path.clone(), req, label, caller),
                     Err(_) => {
                         // Not a complete JSON yet — fall through to slow path.
                         // F1: enforce buffer cap before extending.
@@ -445,7 +458,7 @@ impl McpScheme {
                             Ok(req) => {
                                 let p = conn.path.clone();
                                 conn.request_buf.clear();
-                                (p, req, label)
+                                (p, req, label, caller)
                             }
                             Err(_) => return Ok(buf.len()),
                         }
@@ -462,7 +475,7 @@ impl McpScheme {
                     Ok(req) => {
                         let p = conn.path.clone();
                         conn.request_buf.clear();
-                        (p, req, label)
+                        (p, req, label, caller)
                     }
                     Err(_) => return Ok(buf.len()),
                 }
@@ -473,7 +486,15 @@ impl McpScheme {
         let trace_id = self.allocate_trace_id();
         let start = Instant::now();
         let action = format!("{}.{}", path_clone.service, request.method);
-        let response = self.router.route(&path_clone, &request);
+        // WS2.M3 phase 2 — caller-aware route. RequiresCapability /
+        // GuardianOnly handler methods are now evaluated against the
+        // connection's caller + policy allowlist.
+        let response = self.router.route_with_caller(
+            &path_clone,
+            &request,
+            Some(&caller_ctx),
+            Some(self.policy.as_ref()),
+        );
         let latency_us = start.elapsed().as_micros() as u64;
         self.audit_route(trace_id, id, &caller_label, &action, &response, latency_us);
 

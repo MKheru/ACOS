@@ -1,5 +1,7 @@
 //! MCP message router — dispatches requests to registered service handlers
 
+use acos_authority_types::{CallerContext, Verdict};
+use mcpd_authority_shim::CapabilityPolicy;
 use rustc_hash::FxHashMap;
 
 use crate::handler::{HandlerPolicy, ServiceHandler};
@@ -45,14 +47,34 @@ impl Router {
 
     /// Route a request to the appropriate handler.
     ///
-    /// WS1.M4 — Before dispatching, consult the handler's `required_policy`
-    /// for the requested method. If the policy is not [`HandlerPolicy::Public`]
-    /// we refuse with `DENIED_BY_POLICY`: the capability/scope check that
-    /// would *grant* a non-public policy lives in `mcpd-authority-shim`,
-    /// which is not yet wired in. Until then, declaring a method as
-    /// `RequiresCapability` or `GuardianOnly` is the explicit way to keep
-    /// it un-reachable from untrusted callers.
+    /// Back-compat entry: no caller identity, no capability policy.
+    /// Equivalent to [`Router::route_with_caller`] with both `None`.
+    /// Used by `DispatchHub` for internal service-to-service calls and
+    /// by unit tests that do not exercise the capability layer.
     pub fn route(&self, path: &McpPath, request: &JsonRpcRequest) -> JsonRpcResponse {
+        self.route_with_caller(path, request, None, None)
+    }
+
+    /// WS2.M3 (phase 2) — Route a request with full authority context.
+    ///
+    /// The decision flow:
+    /// 1. Service lookup — `METHOD_NOT_FOUND` on miss.
+    /// 2. Handler declares `required_policy(method)`.
+    ///    - `Public` → dispatch.
+    ///    - `RequiresCapability` → consult `policy.can_invoke(caller, ...)`
+    ///      if both are provided. Deny when caller or policy is missing
+    ///      (cannot evaluate without both).
+    ///    - `GuardianOnly` → consult `policy.can_invoke_guardian_only(...)`
+    ///      under the same provided-both rule.
+    /// 3. `Verdict::Allow` → dispatch; `Verdict::Deny(...)` → return
+    ///    `DENIED_BY_POLICY` with the reason embedded in the message.
+    pub fn route_with_caller(
+        &self,
+        path: &McpPath,
+        request: &JsonRpcRequest,
+        caller: Option<&CallerContext>,
+        policy: Option<&CapabilityPolicy>,
+    ) -> JsonRpcResponse {
         let handler = match self.services.get(&path.service) {
             Some(h) => h,
             None => {
@@ -66,22 +88,67 @@ impl Router {
 
         match handler.required_policy(&request.method) {
             HandlerPolicy::Public => handler.handle(path, request),
-            HandlerPolicy::RequiresCapability => JsonRpcResponse::error(
-                request.id.clone(),
-                DENIED_BY_POLICY,
-                format!(
-                    "method '{}.{}' requires a capability; authority shim not yet wired",
-                    path.service, request.method
-                ),
-            ),
-            HandlerPolicy::GuardianOnly => JsonRpcResponse::error(
-                request.id.clone(),
-                DENIED_BY_POLICY,
-                format!(
-                    "method '{}.{}' is reserved for the Guardian",
-                    path.service, request.method
-                ),
-            ),
+
+            HandlerPolicy::RequiresCapability => {
+                let verdict = match (caller, policy) {
+                    (Some(c), Some(p)) => {
+                        p.can_invoke(c, &path.service, &request.method)
+                    }
+                    _ => Verdict::Deny(
+                        acos_authority_types::DenyCode::NoMatchingCapability,
+                    ),
+                };
+                match verdict {
+                    Verdict::Allow => handler.handle(path, request),
+                    Verdict::Deny(code) => JsonRpcResponse::error(
+                        request.id.clone(),
+                        DENIED_BY_POLICY,
+                        format!(
+                            "method '{}.{}' denied: {:?}",
+                            path.service, request.method, code
+                        ),
+                    ),
+                    _ => JsonRpcResponse::error(
+                        request.id.clone(),
+                        DENIED_BY_POLICY,
+                        format!(
+                            "method '{}.{}' denied: unrecognised verdict",
+                            path.service, request.method
+                        ),
+                    ),
+                }
+            }
+
+            HandlerPolicy::GuardianOnly => {
+                let verdict = match (caller, policy) {
+                    (Some(c), Some(p)) => {
+                        p.can_invoke_guardian_only(c, &path.service, &request.method)
+                    }
+                    _ => Verdict::Deny(
+                        acos_authority_types::DenyCode::BootstrapScopeViolation,
+                    ),
+                };
+                match verdict {
+                    Verdict::Allow => handler.handle(path, request),
+                    Verdict::Deny(code) => JsonRpcResponse::error(
+                        request.id.clone(),
+                        DENIED_BY_POLICY,
+                        format!(
+                            "method '{}.{}' (GuardianOnly) denied: {:?}",
+                            path.service, request.method, code
+                        ),
+                    ),
+                    _ => JsonRpcResponse::error(
+                        request.id.clone(),
+                        DENIED_BY_POLICY,
+                        format!(
+                            "method '{}.{}' (GuardianOnly) denied: unrecognised verdict",
+                            path.service, request.method
+                        ),
+                    ),
+                }
+            }
+
             // HandlerPolicy is `#[non_exhaustive]`. Any variant added in the
             // future is denied here until the router is updated to handle it.
             _ => JsonRpcResponse::error(
@@ -186,7 +253,14 @@ mod tests {
         let resp = r.route(&p("polytest"), &req("cap_method"));
         let err = resp.error.expect("RequiresCapability must deny");
         assert_eq!(err.code, DENIED_BY_POLICY);
-        assert!(err.message.contains("capability"));
+        // WS2.M3 phase 2 — message changed to include the DenyCode variant
+        // (NoMatchingCapability). Match case-insensitively so the test
+        // does not pin one phrasing forever.
+        assert!(
+            err.message.to_lowercase().contains("capability"),
+            "expected 'capability' in error message; got '{}'",
+            err.message
+        );
     }
 
     #[test]
@@ -206,6 +280,128 @@ mod tests {
         let err = resp.error.expect("unknown service must error");
         assert_eq!(err.code, METHOD_NOT_FOUND);
         assert_ne!(err.code, DENIED_BY_POLICY);
+    }
+
+    // -- WS2.M3 phase 2 — caller-aware policy decisions ---------------------
+
+    #[test]
+    fn ws2m3_route_with_caller_denies_anonymous_on_requires_capability() {
+        let r = router_with_policy_handler();
+        let policy = CapabilityPolicy::new();
+        policy.allow_uid(1000); // even with an allowlisted uid, anonymous loses
+        let anon = CallerContext::anonymous();
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("cap_method"),
+            Some(&anon),
+            Some(&policy),
+        );
+        let err = resp.error.expect("anonymous caller must be denied");
+        assert_eq!(err.code, DENIED_BY_POLICY);
+        assert!(err.message.to_lowercase().contains("capability"));
+    }
+
+    #[test]
+    fn ws2m3_route_with_caller_denies_when_uid_not_allowlisted() {
+        let r = router_with_policy_handler();
+        let policy = CapabilityPolicy::new();
+        // Empty allowlist — no uid is granted.
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("cap_method"),
+            Some(&caller),
+            Some(&policy),
+        );
+        assert_eq!(resp.error.expect("uid not allowlisted must be denied").code, DENIED_BY_POLICY);
+    }
+
+    #[test]
+    fn ws2m3_route_with_caller_allows_when_uid_is_allowlisted() {
+        let r = router_with_policy_handler();
+        let policy = CapabilityPolicy::new();
+        policy.allow_uid(1000);
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("cap_method"),
+            Some(&caller),
+            Some(&policy),
+        );
+        assert!(resp.error.is_none(), "allowlisted uid must reach handler; got {:?}", resp.error);
+        assert_eq!(resp.result.unwrap()["called"], "cap_method");
+    }
+
+    #[test]
+    fn ws2m3_route_with_caller_denies_when_caller_or_policy_missing() {
+        let r = router_with_policy_handler();
+        let caller = CallerContext::from_parts(1000, 100, 42);
+        let policy = CapabilityPolicy::new();
+        policy.allow_uid(1000);
+        // Missing policy.
+        assert_eq!(
+            r.route_with_caller(&p("polytest"), &req("cap_method"), Some(&caller), None)
+                .error.unwrap().code,
+            DENIED_BY_POLICY
+        );
+        // Missing caller.
+        assert_eq!(
+            r.route_with_caller(&p("polytest"), &req("cap_method"), None, Some(&policy))
+                .error.unwrap().code,
+            DENIED_BY_POLICY
+        );
+    }
+
+    #[test]
+    fn ws2m3_route_guardian_only_requires_scope_and_uid() {
+        let r = router_with_policy_handler();
+        let policy = CapabilityPolicy::new();
+        let caller = CallerContext::from_parts(0, 0, 1);
+
+        // Scope inactive, uid not allowlisted → deny.
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("guardian_method"),
+            Some(&caller),
+            Some(&policy),
+        );
+        assert_eq!(resp.error.unwrap().code, DENIED_BY_POLICY);
+
+        // Scope active alone → still deny (uid not allowlisted).
+        policy.activate_guardian();
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("guardian_method"),
+            Some(&caller),
+            Some(&policy),
+        );
+        assert_eq!(resp.error.unwrap().code, DENIED_BY_POLICY);
+
+        // Both present → allow.
+        policy.allow_uid(0);
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("guardian_method"),
+            Some(&caller),
+            Some(&policy),
+        );
+        assert!(resp.error.is_none(), "GuardianOnly must allow when scope+uid match; got {:?}", resp.error);
+    }
+
+    #[test]
+    fn ws2m3_public_method_ignores_caller_and_policy() {
+        // Public methods short-circuit before any policy check —
+        // anonymous caller + empty policy must still get through.
+        let r = router_with_policy_handler();
+        let policy = CapabilityPolicy::new();
+        let anon = CallerContext::anonymous();
+        let resp = r.route_with_caller(
+            &p("polytest"),
+            &req("pub_method"),
+            Some(&anon),
+            Some(&policy),
+        );
+        assert!(resp.error.is_none(), "Public method must be unconditional; got {:?}", resp.error);
     }
 
     #[test]
