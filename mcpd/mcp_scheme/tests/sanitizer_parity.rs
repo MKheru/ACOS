@@ -17,13 +17,21 @@
 //! ```
 //!
 //! This Rust port intentionally implements a *subset* of Patch 16
-//! patterns (see `sanitizer.rs` doc-header for the scope statement),
-//! so we set the bar at:
-//!   * detection_rate >= 0.65    — ≥ 45 of 70 attacks caught
-//!   * false_positive_rate <= 0.50 — no worse than Python overall
+//! patterns (see `sanitizer.rs` doc-header for the scope statement).
+//! Initial commit hit 0.6714 detection. Adding the b64/hex/ROT13/
+//! `\uXXXX` substring decoders pushed it to **0.7571** without
+//! increasing the false-positive rate.
+//!
+//! Current bars:
+//!   * detection_rate >= 0.70    — ≥ 49 of 70 attacks caught (we are
+//!     at 53, 0.7571)
+//!   * false_positive_rate <= 0.40 — no worse than Python (we are at
+//!     0.28, *better* than Python's 0.40)
 //!
 //! The test prints a per-category breakdown so the gap list is visible
-//! in CI output even when overall thresholds are met.
+//! in CI output even when overall thresholds are met. As more patterns
+//! land the bars should tighten toward the Python baseline (0.9857 /
+//! 0.40).
 
 use std::fs;
 use std::path::PathBuf;
@@ -145,13 +153,13 @@ fn parity_thresholds_meet_published_target() {
     // If a future commit grows coverage the bars can be tightened
     // toward the Python baseline (0.9857 / 0.40).
     assert!(
-        detection_rate >= 0.65,
-        "detection_rate {:.4} below 0.65 floor — see scorecard above",
+        detection_rate >= 0.70,
+        "detection_rate {:.4} below 0.70 floor — see scorecard above",
         detection_rate
     );
     assert!(
-        fp_rate <= 0.50,
-        "fp_rate {:.4} above 0.50 ceiling — see scorecard above",
+        fp_rate <= 0.40,
+        "fp_rate {:.4} above 0.40 ceiling (Python baseline) — see scorecard above",
         fp_rate
     );
 }
