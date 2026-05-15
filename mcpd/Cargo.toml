@@ -8,9 +8,14 @@ description = "MCP daemon for ACOS — registers and serves the mcp: scheme on R
 default = []
 # Redox features are only enabled during cross-compilation inside the Podman build.
 redox = ["mcp-scheme/redox"]
+# WS1.M5 production gate: when this feature is active, the daemon refuses to
+# start on `Skipped` / `Failed` boot-gate outcomes. Without it, the daemon
+# warns and proceeds (development mode).
+production = []
 
 [dependencies]
 mcp-scheme = { path = "mcp_scheme", default-features = false }
+mcpd-authority-shim = { path = "mcpd-authority-shim" }
 serde_json = "1"
 libc = "0.2"
 

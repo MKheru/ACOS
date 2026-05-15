@@ -29,11 +29,16 @@
 #![deny(unsafe_code)]
 
 mod audit_ring;
+mod boot_gate;
 mod bootstrap;
 mod policy;
 mod shim;
 
 pub use audit_ring::{AuditRing, AuditRingError};
+pub use boot_gate::{
+    parse_hex_hash, verify_from_env, verify_with, BootGateError, BootGateOutcome,
+    DEFAULT_POLICY_PATH,
+};
 pub use bootstrap::{CapabilityZeroBootstrap, CapabilityZeroError};
 pub use policy::CapabilityPolicy;
 pub use shim::AuthorityShim;

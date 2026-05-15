@@ -131,7 +131,45 @@ mod linux_test {
     }
 }
 
+/// WS1.M5 — boot-time policy verification (G4 of SMCP). Runs before any
+/// scheme registration so an unauthorized boot is refused at the
+/// earliest possible moment.
+///
+/// Behaviour:
+/// * `Verified` — boot proceeds, success line logged.
+/// * `Skipped(reason)` — under `cfg(feature = "production")` this is
+///   promoted to an exit; otherwise we log a warning and continue.
+/// * `Failed(err)` — always refuses to boot (any build profile). The
+///   process exits with code 78 (sysexits.h `EX_CONFIG`).
+fn boot_gate() {
+    use mcpd_authority_shim::{BootGateOutcome, verify_from_env};
+    match verify_from_env() {
+        BootGateOutcome::Verified => {
+            eprintln!("mcpd: boot-gate OK — policy hash verified");
+        }
+        BootGateOutcome::Skipped(reason) => {
+            #[cfg(feature = "production")]
+            {
+                eprintln!(
+                    "mcpd: FATAL — production build refuses to start with skipped boot gate ({reason})"
+                );
+                std::process::exit(78);
+            }
+            #[cfg(not(feature = "production"))]
+            {
+                eprintln!("mcpd: WARNING — boot-gate skipped: {reason}");
+            }
+        }
+        BootGateOutcome::Failed(err) => {
+            eprintln!("mcpd: FATAL — boot-gate failed: {err:?}");
+            std::process::exit(78);
+        }
+    }
+}
+
 fn main() {
+    boot_gate();
+
     #[cfg(feature = "redox")]
     redox_daemon::start();
 
