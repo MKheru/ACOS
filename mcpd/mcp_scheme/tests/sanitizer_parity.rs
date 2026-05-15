@@ -16,22 +16,27 @@
 //! missed            : indirect_doc_citation × 1
 //! ```
 //!
-//! This Rust port intentionally implements a *subset* of Patch 16
-//! patterns (see `sanitizer.rs` doc-header for the scope statement).
-//! Initial commit hit 0.6714 detection. Adding the b64/hex/ROT13/
-//! `\uXXXX` substring decoders pushed it to **0.7571** without
-//! increasing the false-positive rate.
+//! This Rust port reaches **detection parity with Python** while
+//! improving on Python's false-positive rate.
+//!
+//! Journey:
+//!   * Initial commit: 0.6714 detection (patterns only)
+//!   * + substring decoders (b64/hex/ROT13/`\uXXXX`/`%XX`): 0.7571
+//!   * + Patch-16 patterns (function_call_inject, metadata_inject,
+//!     indirect_doc_citation, fake_developer_inject, exfil_*,
+//!     context_truncation_*, social_engineer_*, yaml/json_role_spoof,
+//!     tool_*, paraphrase_pretend): 0.9714
+//!   * + leetspeak normalize: **0.9857** (69/70, same as Python)
 //!
 //! Current bars:
-//!   * detection_rate >= 0.70    — ≥ 49 of 70 attacks caught (we are
-//!     at 53, 0.7571)
-//!   * false_positive_rate <= 0.40 — no worse than Python (we are at
-//!     0.28, *better* than Python's 0.40)
+//!   * detection_rate >= 0.95     — Python achieves 0.9857; we set the
+//!     floor at 0.95 so a regression of more than 4 patterns trips CI.
+//!   * false_positive_rate <= 0.35 — Python is at 0.40; we maintain
+//!     0.28 and lock the headroom.
 //!
-//! The test prints a per-category breakdown so the gap list is visible
-//! in CI output even when overall thresholds are met. As more patterns
-//! land the bars should tighten toward the Python baseline (0.9857 /
-//! 0.40).
+//! Remaining gap (same single miss profile as Python on different
+//! attacks): att-043 spaced (`i g n o r e ...`). Closing it would
+//! require space-collapse normalization, deferred.
 
 use std::fs;
 use std::path::PathBuf;
@@ -153,13 +158,13 @@ fn parity_thresholds_meet_published_target() {
     // If a future commit grows coverage the bars can be tightened
     // toward the Python baseline (0.9857 / 0.40).
     assert!(
-        detection_rate >= 0.70,
-        "detection_rate {:.4} below 0.70 floor — see scorecard above",
+        detection_rate >= 0.95,
+        "detection_rate {:.4} below 0.95 floor — see scorecard above",
         detection_rate
     );
     assert!(
-        fp_rate <= 0.40,
-        "fp_rate {:.4} above 0.40 ceiling (Python baseline) — see scorecard above",
+        fp_rate <= 0.35,
+        "fp_rate {:.4} above 0.35 ceiling — see scorecard above",
         fp_rate
     );
 }
