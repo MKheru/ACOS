@@ -1,9 +1,12 @@
 //! MCP message router — dispatches requests to registered service handlers
+//! WS11.M2 trace instrumentation lives in this module.
 
 use std::cell::RefCell;
+use std::time::Instant;
 
 use acos_authority_types::{CallerContext, Verdict};
 use mcpd_authority_shim::CapabilityPolicy;
+use mcpd_observability::{append_event, ObservationEvent, ResultStatus, SpanId, TraceId};
 use rustc_hash::FxHashMap;
 
 use crate::handler::{HandlerPolicy, ServiceHandler};
@@ -57,6 +60,78 @@ impl Drop for CallerGuard {
     fn drop(&mut self) {
         let prev = self.prev;
         CURRENT_CALLER.with(|c| *c.borrow_mut() = prev);
+    }
+}
+
+/// WS11.M2 — RAII ingress trace for one routed JSON-RPC request.
+///
+/// Construction appends an `Intent`; `record_result` appends the matching
+/// `Result`. If a handler panics or a future early-return path forgets to
+/// record, `Drop` emits `IncompleteOrPanic` so the trace never hangs silently.
+pub(crate) struct TraceGuard {
+    trace_id: TraceId,
+    span_id: SpanId,
+    service: String,
+    method: String,
+    started_at: Instant,
+    completed: bool,
+}
+
+impl TraceGuard {
+    pub(crate) fn new(path: &McpPath, request: &JsonRpcRequest) -> Self {
+        let trace_id = TraceId::next();
+        let span_id = SpanId::next();
+        append_event(ObservationEvent::intent(
+            trace_id,
+            span_id,
+            &path.service,
+            &request.method,
+        ));
+        Self {
+            trace_id,
+            span_id,
+            service: path.service.clone(),
+            method: request.method.clone(),
+            started_at: Instant::now(),
+            completed: false,
+        }
+    }
+
+    pub(crate) fn record_result(&mut self, response: &JsonRpcResponse) {
+        if self.completed {
+            return;
+        }
+        let (status, error_code) = match response.error.as_ref() {
+            Some(error) => (ResultStatus::Error, Some(error.code)),
+            None => (ResultStatus::Ok, None),
+        };
+        self.emit_result(status, error_code);
+    }
+
+    fn emit_result(&mut self, status: ResultStatus, error_code: Option<i64>) {
+        self.completed = true;
+        let latency_us = self
+            .started_at
+            .elapsed()
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        append_event(ObservationEvent::result(
+            self.trace_id,
+            self.span_id,
+            &self.service,
+            &self.method,
+            status,
+            latency_us,
+            error_code,
+        ));
+    }
+}
+
+impl Drop for TraceGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.emit_result(ResultStatus::IncompleteOrPanic, None);
+        }
     }
 }
 
@@ -127,14 +202,18 @@ impl Router {
         caller: Option<&CallerContext>,
         policy: Option<&CapabilityPolicy>,
     ) -> JsonRpcResponse {
+        let mut trace = TraceGuard::new(path, request);
+
         let handler = match self.services.get(&path.service) {
             Some(h) => h,
             None => {
-                return JsonRpcResponse::error(
+                let response = JsonRpcResponse::error(
                     request.id.clone(),
                     METHOD_NOT_FOUND,
                     format!("Service '{}' not found", path.service),
                 );
+                trace.record_result(&response);
+                return response;
             }
         };
 
@@ -143,17 +222,13 @@ impl Router {
         // originating identity (and not an anonymous default).
         let _guard = CallerGuard::new(caller.copied());
 
-        match handler.required_policy(&request.method) {
+        let response = match handler.required_policy(&request.method) {
             HandlerPolicy::Public => handler.handle(path, request),
 
             HandlerPolicy::RequiresCapability => {
                 let verdict = match (caller, policy) {
-                    (Some(c), Some(p)) => {
-                        p.can_invoke(c, &path.service, &request.method)
-                    }
-                    _ => Verdict::Deny(
-                        acos_authority_types::DenyCode::NoMatchingCapability,
-                    ),
+                    (Some(c), Some(p)) => p.can_invoke(c, &path.service, &request.method),
+                    _ => Verdict::Deny(acos_authority_types::DenyCode::NoMatchingCapability),
                 };
                 match verdict {
                     Verdict::Allow => handler.handle(path, request),
@@ -181,9 +256,7 @@ impl Router {
                     (Some(c), Some(p)) => {
                         p.can_invoke_guardian_only(c, &path.service, &request.method)
                     }
-                    _ => Verdict::Deny(
-                        acos_authority_types::DenyCode::BootstrapScopeViolation,
-                    ),
+                    _ => Verdict::Deny(acos_authority_types::DenyCode::BootstrapScopeViolation),
                 };
                 match verdict {
                     Verdict::Allow => handler.handle(path, request),
@@ -216,11 +289,18 @@ impl Router {
                     path.service, request.method
                 ),
             ),
-        }
+        };
+        trace.record_result(&response);
+        response
     }
 
     /// Dispatch a request to a service by name (internal use, avoids deadlock)
-    pub fn dispatch(&self, service: &str, method: &str, params: serde_json::Value) -> JsonRpcResponse {
+    pub fn dispatch(
+        &self,
+        service: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> JsonRpcResponse {
         let path = McpPath {
             service: service.to_string(),
             resource: Vec::new(),
@@ -243,6 +323,7 @@ impl Router {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Mutex, OnceLock};
 
     fn req(method: &str) -> JsonRpcRequest {
         JsonRpcRequest {
@@ -282,6 +363,98 @@ mod tests {
         r
     }
 
+    fn trace_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn trace_events_for(service: &str, method: &str) -> Vec<mcpd_observability::ObservationEvent> {
+        mcpd_observability::recent_events(1024)
+            .into_iter()
+            .filter(|event| event.service == service && event.method == method)
+            .collect()
+    }
+
+    // -- WS11.M2 — Router ingress TraceGuard -----------------------------------
+
+    #[test]
+    fn trace_intent_and_result_for_echo() {
+        let _lock = trace_test_lock().lock().unwrap();
+        mcpd_observability::clear_events();
+        let mut r = Router::new();
+        r.register("trace_echo", crate::handler::EchoHandler::new());
+
+        let resp = r.route(&p("trace_echo"), &req("echo"));
+        assert!(resp.error.is_none(), "echo must succeed: {:?}", resp.error);
+
+        let events = trace_events_for("trace_echo", "echo");
+        assert_eq!(events.len(), 2, "expected Intent + Result, got {events:?}");
+        assert_eq!(events[0].kind, mcpd_observability::ObservationKind::Intent);
+        assert_eq!(events[1].kind, mcpd_observability::ObservationKind::Result);
+        assert_eq!(events[0].trace_id, events[1].trace_id);
+        assert_eq!(events[0].span_id, events[1].span_id);
+        assert_eq!(events[1].status, Some(mcpd_observability::ResultStatus::Ok));
+        assert!(events[1].latency_us.is_some());
+        assert_eq!(events[1].error_code, None);
+    }
+
+    #[test]
+    fn trace_result_records_error_code() {
+        let _lock = trace_test_lock().lock().unwrap();
+        mcpd_observability::clear_events();
+        let r = Router::new();
+
+        let resp = r.route(&p("trace_missing"), &req("echo"));
+        let err = resp.error.expect("missing service must error");
+        assert_eq!(err.code, METHOD_NOT_FOUND);
+
+        let events = trace_events_for("trace_missing", "echo");
+        assert_eq!(events.len(), 2, "expected Intent + Result, got {events:?}");
+        assert_eq!(events[1].kind, mcpd_observability::ObservationKind::Result);
+        assert_eq!(
+            events[1].status,
+            Some(mcpd_observability::ResultStatus::Error)
+        );
+        assert_eq!(events[1].error_code, Some(METHOD_NOT_FOUND));
+        assert!(events[1].latency_us.is_some());
+    }
+
+    #[test]
+    fn panic_in_handler_emits_incomplete_result() {
+        let _lock = trace_test_lock().lock().unwrap();
+        mcpd_observability::clear_events();
+
+        struct PanicHandler;
+        impl ServiceHandler for PanicHandler {
+            fn handle(&self, _path: &McpPath, _request: &JsonRpcRequest) -> JsonRpcResponse {
+                panic!("intentional WS11.M2 panic probe");
+            }
+
+            fn list_methods(&self) -> Vec<&str> {
+                vec!["explode"]
+            }
+        }
+
+        let mut r = Router::new();
+        r.register("trace_panic", PanicHandler);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = r.route(&p("trace_panic"), &req("explode"));
+        }));
+        assert!(outcome.is_err(), "panic probe should still unwind");
+
+        let events = trace_events_for("trace_panic", "explode");
+        let result = events
+            .iter()
+            .find(|event| event.kind == mcpd_observability::ObservationKind::Result)
+            .expect("panic trace must include an incomplete Result event");
+        assert_eq!(
+            result.status,
+            Some(mcpd_observability::ResultStatus::IncompleteOrPanic)
+        );
+        assert_eq!(result.error_code, None);
+        assert!(result.latency_us.is_some());
+    }
+
     // -- WS1.M3 — default policy is Public -------------------------------------
 
     #[test]
@@ -290,7 +463,11 @@ mod tests {
         let mut r = Router::new();
         r.register("echo", crate::handler::EchoHandler::new());
         let resp = r.route(&p("echo"), &req("echo"));
-        assert!(resp.error.is_none(), "default Public must route normally; got {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "default Public must route normally; got {:?}",
+            resp.error
+        );
         assert!(resp.result.is_some());
     }
 
@@ -300,7 +477,11 @@ mod tests {
     fn ws1m4_public_method_dispatches_through_policy_handler() {
         let r = router_with_policy_handler();
         let resp = r.route(&p("polytest"), &req("pub_method"));
-        assert!(resp.error.is_none(), "pub_method must succeed; got {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "pub_method must succeed; got {:?}",
+            resp.error
+        );
         assert_eq!(resp.result.unwrap()["called"], "pub_method");
     }
 
@@ -370,7 +551,10 @@ mod tests {
             Some(&caller),
             Some(&policy),
         );
-        assert_eq!(resp.error.expect("uid not allowlisted must be denied").code, DENIED_BY_POLICY);
+        assert_eq!(
+            resp.error.expect("uid not allowlisted must be denied").code,
+            DENIED_BY_POLICY
+        );
     }
 
     #[test]
@@ -385,7 +569,11 @@ mod tests {
             Some(&caller),
             Some(&policy),
         );
-        assert!(resp.error.is_none(), "allowlisted uid must reach handler; got {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "allowlisted uid must reach handler; got {:?}",
+            resp.error
+        );
         assert_eq!(resp.result.unwrap()["called"], "cap_method");
     }
 
@@ -398,13 +586,17 @@ mod tests {
         // Missing policy.
         assert_eq!(
             r.route_with_caller(&p("polytest"), &req("cap_method"), Some(&caller), None)
-                .error.unwrap().code,
+                .error
+                .unwrap()
+                .code,
             DENIED_BY_POLICY
         );
         // Missing caller.
         assert_eq!(
             r.route_with_caller(&p("polytest"), &req("cap_method"), None, Some(&policy))
-                .error.unwrap().code,
+                .error
+                .unwrap()
+                .code,
             DENIED_BY_POLICY
         );
     }
@@ -442,7 +634,11 @@ mod tests {
             Some(&caller),
             Some(&policy),
         );
-        assert!(resp.error.is_none(), "GuardianOnly must allow when scope+uid match; got {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "GuardianOnly must allow when scope+uid match; got {:?}",
+            resp.error
+        );
     }
 
     // -- WS2.M3 phase 3 — CallerGuard thread-local mechanics ---------------
@@ -527,7 +723,11 @@ mod tests {
             Some(&anon),
             Some(&policy),
         );
-        assert!(resp.error.is_none(), "Public method must be unconditional; got {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "Public method must be unconditional; got {:?}",
+            resp.error
+        );
     }
 
     #[test]
@@ -537,11 +737,17 @@ mod tests {
         // returns success body when called directly, but DENIED via router.
         let handler = PolicyTestHandler;
         let direct = handler.handle(&p("polytest"), &req("cap_method"));
-        assert!(direct.result.is_some(), "handler itself returns ok for cap_method");
+        assert!(
+            direct.result.is_some(),
+            "handler itself returns ok for cap_method"
+        );
 
         let r = router_with_policy_handler();
         let routed = r.route(&p("polytest"), &req("cap_method"));
-        assert!(routed.result.is_none(), "router must short-circuit cap_method");
+        assert!(
+            routed.result.is_none(),
+            "router must short-circuit cap_method"
+        );
         assert_eq!(routed.error.unwrap().code, DENIED_BY_POLICY);
     }
 }
