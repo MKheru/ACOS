@@ -1,0 +1,50 @@
+From 3d931a122a968d2be9d8a4300c0ad2512a538d3c Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Sat, 16 May 2026 00:04:43 +0000
+Subject: [PATCH] ACOS: align base-initfs recipe with current bootstrap source
+
+Upstream commit c0f548f2 (bootstrap: Move a bunch of build flags from
+the recipe) converted bootstrap from staticlib to no_main bin. Recipe
+was building it expecting libbootstrap.a + manual ld; now uses cargo
+direct output + -Clink-arg=-nostartfiles to skip crt0 (which conflicts
+with bootstrap own _start). Keep -Zbuild-std flags so compiler_builtins
+exports memcpy/memmove/memset/memcmp.
+---
+ recipes/core/base-initfs/recipe.toml | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/recipes/core/base-initfs/recipe.toml b/recipes/core/base-initfs/recipe.toml
+index eb1353c4..34ccb717 100644
+--- a/recipes/core/base-initfs/recipe.toml
++++ b/recipes/core/base-initfs/recipe.toml
+@@ -94,20 +94,19 @@ done
+ 
+ cp "${COOKBOOK_SYSROOT}/usr/bin/redoxfs" "${COOKBOOK_BUILD}/initfs/bin"
+ 
+-ARCH="$(echo "${GNU_TARGET}" | cut -d - -f1)"
+-RUSTFLAGS="$RUSTFLAGS -Ctarget-feature=+crt-static" cargo \
++# ACOS: upstream bootstrap is now a #![no_main] [[bin]] (commit c0f548f2),
++# not a staticlib. Cargo builds the final binary directly; we just tell gcc
++# to skip crt0 (-nostartfiles) because bootstrap provides its own _start.
++# Keep -Zbuild-std + compiler-builtins-mem so memcpy/memmove/memset/memcmp
++# get exported by compiler_builtins (build-std needed because target is bare).
++RUSTFLAGS="$RUSTFLAGS -Ctarget-feature=+crt-static -Clink-arg=-nostartfiles" cargo \
+     -Zbuild-std=core,alloc,compiler_builtins \
+     -Zbuild-std-features=compiler-builtins-mem build \
+     --target "${TARGET}" \
+     --manifest-path "${COOKBOOK_SOURCE}/bootstrap/Cargo.toml" \
+     --release \
+     --target-dir "${COOKBOOK_BUILD}"
+-"${GNU_TARGET}-ld" \
+-    -o "${COOKBOOK_BUILD}/bootstrap" \
+-    --gc-sections \
+-    -T "${COOKBOOK_SOURCE}/bootstrap/src/${ARCH}.ld" \
+-    -z max-page-size=4096 \
+-    "${COOKBOOK_BUILD}/${TARGET}/release/libbootstrap.a"
++cp -v "${COOKBOOK_BUILD}/${TARGET}/release/bootstrap" "${COOKBOOK_BUILD}/bootstrap"
+ 
+ env -u CARGO -u RUSTFLAGS cargo run --manifest-path "${COOKBOOK_SOURCE}/initfs/tools/Cargo.toml" --bin redox-initfs-ar -- "${COOKBOOK_BUILD}/initfs" "${COOKBOOK_BUILD}/bootstrap" -o "${COOKBOOK_BUILD}/initfs.img"
+ 
+-- 
+2.39.5
+

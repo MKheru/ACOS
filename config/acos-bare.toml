@@ -8,8 +8,7 @@ filesystem_size = 512
 
 # ACOS-specific packages (on top of minimal)
 [packages]
-libevent = {}
-tmux = {}
+# libevent + tmux removed: tmux needs resolv.h (relibc gap) and is non-essential for ACOS dev
 curl = {}
 # mcpd = {}  # TODO: fix recipe fetch (source_info.toml missing after cache clean)
 # Use scripts/build-inject-all.sh after make image instead

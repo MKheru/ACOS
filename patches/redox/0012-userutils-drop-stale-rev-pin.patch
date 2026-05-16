@@ -1,0 +1,28 @@
+From 48f438d476fd547d1fe4c5a2b858d772ddc2d512 Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Sat, 16 May 2026 00:42:24 +0000
+Subject: [PATCH] ACOS: drop stale rev pin from userutils recipe
+
+Same problem as bootloader/kernel in patch 0011: rev 5a2674c was
+rewritten away on upstream master, breaking any fresh setup that
+tries to checkout the pinned commit. Drop the rev= line so the
+recipe tracks HEAD of the cloned branch (cloned by setup-acos.sh
+which patches/redox/0011 + this commit teach to fetch userutils).
+---
+ recipes/core/userutils/recipe.toml | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/recipes/core/userutils/recipe.toml b/recipes/core/userutils/recipe.toml
+index 2a54e0ba..9f7bcc84 100644
+--- a/recipes/core/userutils/recipe.toml
++++ b/recipes/core/userutils/recipe.toml
+@@ -1,6 +1,5 @@
+ [source]
+ git = "file:///mnt/redox/recipes/core/userutils/source"
+-rev = "5a2674c"
+ 
+ [build]
+ template = "custom"
+-- 
+2.39.5
+
