@@ -1,0 +1,48 @@
+name: Phase 2 kernel deny-by-default smoke
+
+on:
+  issues:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: phase2-kernel-smoke-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  phase2-kernel-deny-by-default:
+    name: Phase 2 kernel deny-by-default smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.issue.number == 2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout ACOS
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mcpd -> target
+
+      - name: Authority shim smoke
+        working-directory: mcpd
+        run: cargo test -p mcpd-authority-shim --locked
+
+      - name: Router deny-by-default smoke
+        working-directory: mcpd
+        run: cargo test -p mcp-scheme --locked router::tests:: -- --nocapture
+
+      - name: Phase 2 unblock marker
+        run: |
+          echo "ACOS_PHASE2_KERNEL_DENY_BY_DEFAULT_SMOKE_OK"
+          echo "Triggered by issue #${{ github.event.issue.number || 'manual' }}"
