@@ -1,0 +1,9 @@
+[package]
+name = "mcpd-observability"
+version = "0.1.0"
+edition = "2021"
+description = "ACOS mcpd observability primitives and redaction helpers"
+
+[dependencies]
+blake3 = "1"
+serde_json = "1"

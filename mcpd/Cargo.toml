@@ -16,6 +16,7 @@ production = []
 [dependencies]
 mcp-scheme = { path = "mcp_scheme", default-features = false }
 mcpd-authority-shim = { path = "mcpd-authority-shim" }
+mcpd-observability = { path = "mcpd-observability" }
 serde_json = "1"
 libc = "0.2"
 
@@ -33,4 +34,5 @@ members = [
     "acos-system-capabilities",
     "mcp_scheme",
     "mcpd-authority-shim",
+    "mcpd-observability",
 ]
