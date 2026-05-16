@@ -26,9 +26,16 @@ import signal
 import socket
 import subprocess
 import threading
+from datetime import datetime, timezone
+from pathlib import Path
 
-import pexpect
-import pexpect.fdpexpect
+try:
+    import pexpect
+    import pexpect.fdpexpect
+    HAS_PEXPECT = True
+except ImportError:
+    pexpect = None
+    HAS_PEXPECT = False
 
 # Optional imports — graceful degradation if not installed
 try:
@@ -49,6 +56,11 @@ try:
 except Exception:
     HAS_OCR = False
 
+try:
+    from artifact_retention import prune_artifacts
+except ImportError:
+    prune_artifacts = None
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -66,6 +78,186 @@ VNC_PORT = 5900 + VNC_DISPLAY
 BOOT_TIMEOUT = 90
 LOGIN_TIMEOUT = 15
 CMD_TIMEOUT = 10
+ARTIFACT_ROOT = os.path.join(PROJECT_DIR, "test_artifacts")
+
+
+# ---------------------------------------------------------------------------
+# Artifact Manager
+# ---------------------------------------------------------------------------
+
+def _ppm_tokens(data):
+    """Yield PPM header/raster tokens while ignoring comments."""
+    token = bytearray()
+    in_comment = False
+    for byte in data:
+        if in_comment:
+            if byte in b"\r\n":
+                in_comment = False
+            continue
+        if byte == ord("#"):
+            in_comment = True
+            if token:
+                yield bytes(token)
+                token.clear()
+            continue
+        if byte in b" \t\r\n":
+            if token:
+                yield bytes(token)
+                token.clear()
+            continue
+        token.append(byte)
+    if token:
+        yield bytes(token)
+
+
+def _read_ppm_rgb(path):
+    """Read small P3/P6 PPM files into ``(width, height, rgb_bytes)``."""
+    data = Path(path).read_bytes()
+    tokens = list(_ppm_tokens(data))
+    if len(tokens) < 4:
+        raise ValueError("invalid PPM: missing header")
+    magic = tokens[0]
+    if magic not in (b"P3", b"P6"):
+        raise ValueError(f"unsupported PPM format: {magic!r}")
+    width = int(tokens[1])
+    height = int(tokens[2])
+    maxval = int(tokens[3])
+    if maxval <= 0 or maxval > 255:
+        raise ValueError("only 8-bit PPM files are supported")
+    expected = width * height * 3
+    if magic == b"P3":
+        values = [int(tok) for tok in tokens[4:]]
+        if len(values) < expected:
+            raise ValueError("invalid P3 PPM: truncated raster")
+        rgb = bytes((value * 255) // maxval for value in values[:expected])
+        return width, height, rgb
+
+    # P6 raster starts after the fourth token and one whitespace byte.
+    pos = 0
+    seen = 0
+    in_comment = False
+    while pos < len(data) and seen < 4:
+        byte = data[pos]
+        if in_comment:
+            if byte in b"\r\n":
+                in_comment = False
+            pos += 1
+            continue
+        if byte == ord("#"):
+            in_comment = True
+            pos += 1
+            continue
+        if byte in b" \t\r\n":
+            pos += 1
+            continue
+        while pos < len(data) and data[pos] not in b" \t\r\n":
+            pos += 1
+        seen += 1
+    while pos < len(data) and data[pos] in b" \t\r\n":
+        pos += 1
+    raster = data[pos:pos + expected]
+    if len(raster) < expected:
+        raise ValueError("invalid P6 PPM: truncated raster")
+    if maxval == 255:
+        return width, height, raster
+    return width, height, bytes((value * 255) // maxval for value in raster)
+
+
+def _write_png_rgb(path, width, height, rgb):
+    """Write RGB bytes to a minimal PNG file using only the stdlib."""
+    import binascii
+    import struct
+    import zlib
+
+    def chunk(kind, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    stride = width * 3
+    raw = b"".join(
+        b"\x00" + rgb[row * stride:(row + 1) * stride]
+        for row in range(height)
+    )
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw))
+    png += chunk(b"IEND", b"")
+    Path(path).write_bytes(png)
+
+
+class ArtifactManager:
+    """Create and retain structured QEMU test artifacts.
+
+    A run creates a JSON summary at ``test_artifacts/<ws>/<timestamp>.json``.
+    Binary assets for the same run live under
+    ``test_artifacts/<ws>/<timestamp>/``. QMP PPM screenshots are converted to
+    PNG when Pillow is available.
+    """
+
+    def __init__(self, ws, root=ARTIFACT_ROOT, timestamp=None):
+        if not ws or "/" in ws or ".." in ws:
+            raise ValueError("ws must be a non-empty path segment")
+        self.ws = ws
+        self.root = Path(root)
+        self.timestamp = timestamp or datetime.now(timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        self.ws_dir = self.root / ws
+        self.asset_dir = self.ws_dir / self.timestamp
+        self.json_path = self.ws_dir / f"{self.timestamp}.json"
+        self.ws_dir.mkdir(parents=True, exist_ok=True)
+        self.asset_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_json(self, payload):
+        """Write the run summary JSON and return its path."""
+        data = dict(payload)
+        data.setdefault("ws", self.ws)
+        data.setdefault("timestamp", self.timestamp)
+        self.json_path.write_text(
+            json.dumps(data, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return str(self.json_path)
+
+    def asset_path(self, name):
+        """Return a safe asset path below this run's asset directory."""
+        path = self.asset_dir / name
+        if path.resolve().parent != self.asset_dir.resolve():
+            raise ValueError("asset name must not contain path traversal")
+        return path
+
+    def convert_ppm_to_png(self, ppm_path, png_path=None):
+        """Convert a PPM screenshot to PNG and return the PNG path."""
+        ppm = Path(ppm_path)
+        png = Path(png_path) if png_path else ppm.with_suffix(".png")
+        if HAS_PIL:
+            with Image.open(ppm) as img:
+                img.save(png, "PNG")
+        else:
+            width, height, rgb = _read_ppm_rgb(ppm)
+            _write_png_rgb(png, width, height, rgb)
+        return str(png)
+
+    def capture_screenshot(self, controller, name="screenshot"):
+        """Capture QMP PPM, convert to PNG, and return both paths."""
+        ppm = self.asset_path(f"{name}.ppm")
+        controller.screenshot(str(ppm), use_vnc=False)
+        png = self.convert_ppm_to_png(ppm)
+        return {"ppm": str(ppm), "png": png}
+
+    def prune(self, max_age_days=7, max_total_bytes=5 * 1024 * 1024 * 1024):
+        """Apply retention to the artifact root."""
+        if prune_artifacts is None:
+            raise RuntimeError("artifact_retention.py is not importable")
+        return prune_artifacts(
+            self.root,
+            max_age_days=max_age_days,
+            max_total_bytes=max_total_bytes,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +388,8 @@ class SerialConsole:
     """Serial PTY interaction via pexpect."""
 
     def __init__(self, pty_path):
+        if not HAS_PEXPECT:
+            raise RuntimeError("pexpect not installed: pip install pexpect")
         fd = os.open(pty_path, os.O_RDWR)
         self.serial = pexpect.fdpexpect.fdspawn(
             fd, timeout=CMD_TIMEOUT, encoding="utf-8",
