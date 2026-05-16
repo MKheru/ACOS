@@ -79,6 +79,15 @@ impl CapabilityPolicy {
             .unwrap_or_default()
     }
 
+    /// Decide whether `caller` may open a connection to `service`.
+    ///
+    /// WS2.M5 uses this in WARN-only mode. It deliberately mirrors the
+    /// current uid-only `can_invoke` semantics so future per-service grants
+    /// can tighten open-time decisions without changing mcp-scheme call sites.
+    pub fn can_open(&self, caller: &CallerContext, service: &str) -> Verdict {
+        self.can_invoke(caller, service, "__open__")
+    }
+
     /// Decide whether `caller` may invoke `service`.`method` under the
     /// given handler policy. The caller is assumed to have been
     /// captured at handle-open time and threaded down to this point.

@@ -1,7 +1,7 @@
 //! Support service handlers: logging and configuration
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use serde_json::json;
@@ -21,15 +21,41 @@ struct LogEntry {
     timestamp_secs: u64,
 }
 
+#[derive(Clone)]
 pub struct LogHandler {
-    entries: Mutex<Vec<LogEntry>>,
+    entries: Arc<Mutex<Vec<LogEntry>>>,
 }
 
 impl LogHandler {
     pub fn new() -> Self {
         LogHandler {
-            entries: Mutex::new(Vec::new()),
+            entries: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Append an entry directly without going through JSON-RPC dispatch.
+    pub fn write_entry(&self, level: &str, message: String, source: &str) -> usize {
+        let timestamp_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        entries.push(LogEntry { level: level.to_string(), message, source: source.to_string(), timestamp_secs });
+        if entries.len() > 1000 {
+            let excess = entries.len() - 1000;
+            entries.drain(..excess);
+        }
+        entries.len() - 1
+    }
+}
+
+impl Default for LogHandler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -58,21 +84,7 @@ impl ServiceHandler for LogHandler {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                let timestamp_secs = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-
-                let mut entries = match self.entries.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                entries.push(LogEntry { level, message, source, timestamp_secs });
-                if entries.len() > 1000 {
-                    let excess = entries.len() - 1000;
-                    entries.drain(..excess);
-                }
-                let index = entries.len() - 1;
+                let index = self.write_entry(&level, message, &source);
                 JsonRpcResponse::success(request.id.clone(), json!({"ok": true, "index": index}))
             }
             "read" => {
