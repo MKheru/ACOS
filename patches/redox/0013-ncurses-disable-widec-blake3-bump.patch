@@ -1,0 +1,39 @@
+From 6b0828d410e6ee3ca01d2529ad605540341b5c51 Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Sat, 16 May 2026 00:42:24 +0000
+Subject: [PATCH] ACOS: ncurses --disable-widec + blake3 bump
+
+ncurses 6.6: relibc has no wchar.h/wctype.h/wint_t headers so the
+wide-char build fails at C compile (unknown type name wint_t).
+Pass --disable-widec so curses.h does not declare wide-char API.
+Also update blake3 because the upstream tarball pinned hash
+mismatches the now-served file (size+sha256 identical, hash drift
+in recipe). Wide-char support can be re-enabled once relibc grows
+wchar.h/wctype.h (a separate chantier).
+---
+ recipes/libs/ncurses/recipe.toml | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/recipes/libs/ncurses/recipe.toml b/recipes/libs/ncurses/recipe.toml
+index 03535a5e..10b088f2 100644
+--- a/recipes/libs/ncurses/recipe.toml
++++ b/recipes/libs/ncurses/recipe.toml
+@@ -1,6 +1,6 @@
+ [source]
+ tar = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz"
+-blake3 = "0d1c9fdf53c0ca4bd66ba707d49a079d2dd6f5a960cdec74a56e29952c4ffe73"
++blake3 = "fbec55697a01f99b9cc3f25be55e73ae7091f4c53e5d81a1ea15734c4e5b7238"
+ patches = [
+     "redox.patch"
+ ]
+@@ -12,6 +12,7 @@ DYNAMIC_INIT
+ COOKBOOK_CONFIGURE_FLAGS+=(
+     --disable-db-install
+     --disable-stripping
++    --disable-widec
+     --without-ada
+     --without-manpages
+     --without-tests
+-- 
+2.39.5
+

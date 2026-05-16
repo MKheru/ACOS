@@ -1,0 +1,30 @@
+[Unit]
+Description=ACOS image builder HTTP daemon for AH (acos-hermes)
+Documentation=https://github.com/MKheru/ACOS/blob/main/docs/BUILDING_ACOS_ON_VPS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes
+Environment=PATH=/home/hermes/.cargo/bin:/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/acos-builder/server.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Sandbox — looser than hermes-agent since we explicitly need subprocess
+# execution of make / git / podman, plus FUSE mounts (rootless podman uses
+# fusermount3 which is setuid — NoNewPrivileges blocks the escalation).
+# Confirmed via build 2026-05-16: with NoNewPrivileges=yes the disk-mk
+# stage fails with "fusermount3: mount failed: Operation not permitted".
+NoNewPrivileges=no
+ProtectSystem=full
+ReadWritePaths=/home/hermes /tmp /var/lib/acos-builder
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target

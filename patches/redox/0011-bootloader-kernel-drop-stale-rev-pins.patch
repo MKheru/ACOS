@@ -1,0 +1,45 @@
+From 6b0e598ae403eb76f28a474f59ef132915d81298 Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Sat, 16 May 2026 00:08:07 +0000
+Subject: [PATCH] ACOS: drop stale rev pins from bootloader/kernel recipes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Revs 2b57738 (bootloader) and 77e12fd (kernel) no longer exist on the
+upstream gitlab branches — they were rewritten away, breaking any
+fresh setup that tries to checkout the pinned commits. Drop the
+rev= lines so the recipes use HEAD of the cloned branches. Cosmetic
+boot-message rebrand (kernel.rs prints "ACOS starting"...) is
+out-of-scope for this fix and will need its own source-patches/
+delivery if it comes back.
+---
+ recipes/core/bootloader/recipe.toml | 1 -
+ recipes/core/kernel/recipe.toml     | 1 -
+ 2 files changed, 2 deletions(-)
+
+diff --git a/recipes/core/bootloader/recipe.toml b/recipes/core/bootloader/recipe.toml
+index 70ae2f3a..a4ae7f88 100644
+--- a/recipes/core/bootloader/recipe.toml
++++ b/recipes/core/bootloader/recipe.toml
+@@ -1,6 +1,5 @@
+ [source]
+ git = "file:///mnt/redox/recipes/core/bootloader/source"
+-rev = "2b57738"
+ 
+ [build]
+ template = "custom"
+diff --git a/recipes/core/kernel/recipe.toml b/recipes/core/kernel/recipe.toml
+index 4bd30085..0d925fa6 100644
+--- a/recipes/core/kernel/recipe.toml
++++ b/recipes/core/kernel/recipe.toml
+@@ -1,6 +1,5 @@
+ [source]
+ git = "file:///mnt/redox/recipes/core/kernel/source"
+-rev = "77e12fd"
+ 
+ [build]
+ template = "custom"
+-- 
+2.39.5
+

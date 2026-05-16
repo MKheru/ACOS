@@ -1,0 +1,56 @@
+From 77dfae65ffd7fcbc5db5b69a1054c814eeea1612 Mon Sep 17 00:00:00 2001
+From: ACOS Build <build@acos.local>
+Date: Sat, 16 May 2026 00:07:42 +0000
+Subject: [PATCH] ACOS: fix fbbootlogd TextScreen::new() call (now takes
+ Option)
+
+Upstream console_draw::TextScreen::new() now requires
+Option<ConsoleFont>. fbbootlogd called it with zero args, breaking the
+base-initfs build (error E0061). Pass None to keep prior behavior
+(default ConsoleFont). Delivered via cookbook patches= mechanism so it
+survives a fresh git clone of base/source.
+---
+ recipes/core/base/recipe.toml                    |  4 ++++
+ ...ootlogd-textscreen-new-takes-option-arg.patch | 16 ++++++++++++++++
+ 2 files changed, 20 insertions(+)
+ create mode 100644 recipes/core/base/source-patches/0001-fbbootlogd-textscreen-new-takes-option-arg.patch
+
+diff --git a/recipes/core/base/recipe.toml b/recipes/core/base/recipe.toml
+index 1f93fb3f..c0bfd891 100644
+--- a/recipes/core/base/recipe.toml
++++ b/recipes/core/base/recipe.toml
+@@ -1,5 +1,9 @@
+ [source]
+ git = "https://gitlab.redox-os.org/redox-os/base.git"
++# ACOS: forward-port fbbootlogd to current console_draw::TextScreen API
++patches = [
++    "source-patches/0001-fbbootlogd-textscreen-new-takes-option-arg.patch",
++]
+ 
+ [build]
+ template = "custom"
+diff --git a/recipes/core/base/source-patches/0001-fbbootlogd-textscreen-new-takes-option-arg.patch b/recipes/core/base/source-patches/0001-fbbootlogd-textscreen-new-takes-option-arg.patch
+new file mode 100644
+index 00000000..084fe040
+--- /dev/null
++++ b/recipes/core/base/source-patches/0001-fbbootlogd-textscreen-new-takes-option-arg.patch
+@@ -0,0 +1,16 @@
++Forward-port fbbootlogd to current console_draw::TextScreen API
++
++TextScreen::new() now requires Option<ConsoleFont>. The default
++ConsoleFont matches what the old no-arg form used.
++
++--- a/drivers/graphics/fbbootlogd/src/scheme.rs
+++++ b/drivers/graphics/fbbootlogd/src/scheme.rs
++@@ -28,7 +28,7 @@ impl FbbootlogScheme {
++         let mut scheme = FbbootlogScheme {
++             input_handle: ConsumerHandle::bootlog_vt().expect("fbbootlogd: Failed to open vt"),
++             display_map: None,
++-            text_screen: console_draw::TextScreen::new(),
+++            text_screen: console_draw::TextScreen::new(None),
++             text_buffer: console_draw::TextBuffer::new(1000),
++             is_scrollback: false,
++             scrollback_offset: 1000,
+-- 
+2.39.5
+

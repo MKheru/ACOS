@@ -48,6 +48,21 @@ done
 cp "$ACOS_DIR/config/acos-bare.toml" "$BASE_DIR/config/"
 echo "Copied acos-bare.toml"
 
+# --- Step 3b: Clone bootloader + kernel sources locally ---
+# patches/redox/0003 rewrites these two recipes to use file:// URLs so the
+# cookbook builds from our local clone (allows applying ACOS rebrand patches
+# without modifying upstream gitlab refs). The recipes have no rev pin since
+# patches/redox/0011 — they track HEAD of master.
+for repo in bootloader kernel userutils; do
+    SRC_DIR="$BASE_DIR/recipes/core/$repo/source"
+    if [ -d "$SRC_DIR/.git" ]; then
+        echo "$repo source already present"
+    else
+        echo "Cloning $repo source..."
+        git clone "https://gitlab.redox-os.org/redox-os/$repo.git" "$SRC_DIR"
+    fi
+done
+
 # --- Step 4: Setup Ion with MCP builtins ---
 ION_DIR="$BASE_DIR/recipes/core/ion/source"
 if [ -d "$ION_DIR/.git" ]; then
