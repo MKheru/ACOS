@@ -131,6 +131,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-runtime-api"
+version = "0.1.0"
+
+[[package]]
 name = "mcp-scheme"
 version = "0.1.0"
 dependencies = [
@@ -138,6 +142,7 @@ dependencies = [
  "libc",
  "libredox",
  "mcpd-authority-shim",
+ "mcpd-observability",
  "redox-scheme",
  "redox_syscall",
  "regex",
