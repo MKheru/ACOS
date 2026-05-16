@@ -16,7 +16,7 @@
 /// `Result` is the default for backward-compatible single-phase
 /// emitters (pre-WS3.M8 code paths and unit-test fixtures that build
 /// events ad hoc).
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum EventKind {
     /// "About to dispatch" — emitted before `Handler::handle` is called.
@@ -25,13 +25,8 @@ pub enum EventKind {
     Intent,
     /// "Dispatch returned" — carries the real verdict and the measured
     /// latency. Pair this with the preceding `Intent` via `trace_id`.
+    #[default]
     Result,
-}
-
-impl Default for EventKind {
-    fn default() -> Self {
-        EventKind::Result
-    }
 }
 
 impl EventKind {
@@ -40,7 +35,6 @@ impl EventKind {
         match self {
             EventKind::Intent => "intent",
             EventKind::Result => "result",
-            _ => "unknown",
         }
     }
 }
