@@ -11,3 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 acos-authority-types = { path = "../acos-authority-types" }
+
+[[bench]]
+name = "authority_overhead"
+harness = false
