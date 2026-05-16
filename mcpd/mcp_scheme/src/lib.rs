@@ -81,6 +81,9 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// A unique handle for an open MCP connection
 pub type HandleId = usize;
 
+/// Shared dynamic dispatch signature used by handlers that call back into the router.
+type McpDispatchFn = Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync>;
+
 /// Represents an MCP resource path, parsed from the scheme URL
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpPath {
@@ -138,6 +141,9 @@ pub struct McpScheme {
     /// a handler declares a method as non-Public. Deny-by-default; uids
     /// must be allowlisted via [`McpScheme::capability_policy`].
     policy: std::sync::Arc<mcpd_authority_shim::CapabilityPolicy>,
+    /// WS2.M5 — shared `log` service instance used for WARN-only
+    /// capability probes without recursive JSON-RPC dispatch.
+    cap_warn_log: LogHandler,
     /// Monotonic trace id generator. Wraps at u128::MAX — practically
     /// inexhaustible.
     next_trace_id: u128,
@@ -164,6 +170,12 @@ struct McpConnection {
     caller: acos_authority_types::CallerContext,
 }
 
+impl Default for McpScheme {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpScheme {
     pub fn new() -> Self {
         // WS1.M2 + WS11.M1 — Build the authority shim early so the
@@ -185,7 +197,8 @@ impl McpScheme {
         router.register("file", FileReadHandler::new());
         router.register("file_write", FileWriteHandler::new());
         router.register("file_search", FileSearchHandler::new());
-        router.register("log", LogHandler::new());
+        let cap_warn_log = LogHandler::new();
+        router.register("log", cap_warn_log.clone());
         router.register("config", ConfigHandler::new());
         router.register("echo", handler::EchoHandler::new());
         // NOTE: "mcp" is registered later with dispatch (no placeholder needed)
@@ -226,35 +239,35 @@ impl McpScheme {
         let hub = dispatch_hub::DispatchHub::new();
 
         let hub_ai = hub.clone();
-        let dispatch_ai: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
+        let dispatch_ai: McpDispatchFn =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
                 hub_ai.dispatch(service, method, params)
             });
         router.register("ai", AiHandler::new(dispatch_ai, Some(ai_bridge)));
 
         let hub_talk = hub.clone();
-        let dispatch_talk: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
+        let dispatch_talk: McpDispatchFn =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
                 hub_talk.dispatch(service, method, params)
             });
         router.register("talk", TalkHandler::new(dispatch_talk));
 
         let hub_guardian = hub.clone();
-        let dispatch_guardian: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
+        let dispatch_guardian: McpDispatchFn =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
                 hub_guardian.dispatch(service, method, params)
             });
         router.register("guardian", GuardianHandler::new(dispatch_guardian));
 
         let hub_llm = hub.clone();
-        let dispatch_llm: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
+        let dispatch_llm: McpDispatchFn =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
                 hub_llm.dispatch(service, method, params)
             });
         router.register("llm", LlmHandler::new(dispatch_llm));
 
         let hub_mcp = hub.clone();
-        let dispatch_mcp: Box<dyn Fn(&str, &str, serde_json::Value) -> protocol::JsonRpcResponse + Send + Sync> =
+        let dispatch_mcp: McpDispatchFn =
             Box::new(move |service: &str, method: &str, params: serde_json::Value| {
                 hub_mcp.dispatch(service, method, params)
             });
@@ -271,6 +284,7 @@ impl McpScheme {
             router,
             shim,
             policy,
+            cap_warn_log,
             next_trace_id: 1,
         }
     }
@@ -286,6 +300,27 @@ impl McpScheme {
     /// allowlist at boot or in response to a Guardian decision).
     pub fn capability_policy(&self) -> &std::sync::Arc<mcpd_authority_shim::CapabilityPolicy> {
         &self.policy
+    }
+
+    /// WS2.M5 — append a WARN-only capability decision to `mcp://log` and
+    /// the boot console, but never affect control flow.
+    fn emit_cap_warn(
+        &self,
+        phase: &str,
+        caller_label: &str,
+        service: &str,
+        method: Option<&str>,
+        verdict: acos_authority_types::Verdict,
+    ) {
+        let target = match method {
+            Some(method) => format!("{service}.{method}"),
+            None => service.to_string(),
+        };
+        let message = format!(
+            "cap.warn phase={phase} caller={caller_label} target={target} verdict={verdict:?}"
+        );
+        println!("{message}");
+        self.cap_warn_log.write_entry("warn", message, "cap.warn");
     }
 
     /// Produce a fresh trace id for the next dispatch. Internal helper —
@@ -389,6 +424,11 @@ impl McpScheme {
         if !self.router.has_service(&mcp_path.service) {
             return Err(-libc::ENOENT);
         }
+
+        // WS2.M5 — WARN-only open hook: log the current capability verdict
+        // but keep Phase A non-blocking.
+        let open_verdict = self.policy.can_open(&caller, &mcp_path.service);
+        self.emit_cap_warn("can_open", &caller.label(), &mcp_path.service, None, open_verdict);
 
         // F2: Enforce max connection limit
         if self.connections.len() >= MAX_CONNECTIONS {
@@ -527,6 +567,15 @@ impl McpScheme {
         // panicked (the dispatch never returned), so the ring itself
         // surfaces that anomaly.
         self.audit_intent(trace_id, id, &caller_label, &action);
+        // WS2.M5 — WARN-only invoke hook for every parsed MCP call.
+        let invoke_verdict = self.policy.can_invoke(&caller_ctx, &path_clone.service, &request.method);
+        self.emit_cap_warn(
+            "can_invoke",
+            &caller_label,
+            &path_clone.service,
+            Some(&request.method),
+            invoke_verdict,
+        );
 
         let start = Instant::now();
         // WS2.M3 phase 2 — caller-aware route. RequiresCapability /
@@ -922,6 +971,49 @@ mod tests {
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert!(result["levels"].is_array());
+    }
+
+    #[test]
+    fn cap_warn_logs_open_and_invoke_without_blocking() {
+        let mut scheme = McpScheme::new();
+        let echo_id = scheme.open(b"echo").unwrap();
+        let echo_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "echo",
+            "params": {"message": "warn-only still allows"},
+            "id": 21
+        });
+        scheme.write(echo_id, serde_json::to_string(&echo_req).unwrap().as_bytes()).unwrap();
+        let mut echo_buf = vec![0u8; 4096];
+        let echo_read = scheme.read(echo_id, &mut echo_buf).unwrap();
+        let echo_resp: protocol::JsonRpcResponse = serde_json::from_slice(&echo_buf[..echo_read]).unwrap();
+        assert!(echo_resp.error.is_none(), "WARN-only hook must not block echo");
+
+        let log_id = scheme.open(b"log").unwrap();
+        let log_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "read",
+            "params": {"count": 20},
+            "id": 22
+        });
+        scheme.write(log_id, serde_json::to_string(&log_req).unwrap().as_bytes()).unwrap();
+        let mut log_buf = vec![0u8; 8192];
+        let log_read = scheme.read(log_id, &mut log_buf).unwrap();
+        let log_resp: protocol::JsonRpcResponse = serde_json::from_slice(&log_buf[..log_read]).unwrap();
+        let entries = log_resp.result.unwrap().as_array().unwrap().clone();
+        let messages: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| entry.get("message").and_then(|m| m.as_str()))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            messages.iter().any(|msg| msg.contains("cap.warn phase=can_open") && msg.contains("target=echo")),
+            "missing can_open warning in {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|msg| msg.contains("cap.warn phase=can_invoke") && msg.contains("target=echo.echo")),
+            "missing can_invoke warning in {messages:?}"
+        );
     }
 
     #[test]
