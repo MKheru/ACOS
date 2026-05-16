@@ -662,7 +662,7 @@ Gemma 4 (sortie 2 avril 2026, Apache 2.0) remplace **phi4-mini** qui n'a pas de 
 | 13.2 | Service `mcp://gui` : `tools/list`, `state`, `notify`, `dialog.show`, `panel.open`, etc. | Moyen | Dev |
 | 13.3 | HTTP/WSS server intégré à mcpd (serve bundle + WebSocket MCP transport) | Moyen | Dev |
 | 13.4 | Bootstrap SPA : SolidJS + Vite + connection WSS au serveur ACOS | Moyen | Dev |
-| 13.5 | UI : dashboard système (CPU/RAM/services), 19 services explorables, log live | Moyen | Dev |
+| 13.5 | UI : dashboard système (CPU/RAM/services), 19 services explorables, log live — **bloqué jusqu'à WS11 `observability.recent` MCP** (voir `docs/WS13_BLOCKED_ON_WS11.md`) | Moyen | Dev |
 | 13.6 | mTLS — émission cert serveur ACOS + client (pairing) | Moyen | Dev |
 | 13.7 | Service `mcp://identity` pour pairing nouveaux clients (QR code) | Moyen | Dev |
 | 13.8 | LLM driving — Gemma 4 reçoit le state visuel sérialisé, peut appeler les tools UI | Moyen | Dev |
