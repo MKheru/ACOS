@@ -34,6 +34,8 @@ members = [
     "acos-system-capabilities",
     "guardian-authority",
     "llm-runtime-api",
+    "mcp-bridge",
+    "mcp-fabric",
     "mcp_scheme",
     "mcpd-authority-shim",
     "mcpd-observability",
