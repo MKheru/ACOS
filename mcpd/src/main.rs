@@ -13,10 +13,13 @@
 
 #[cfg(feature = "redox")]
 mod redox_daemon {
-    use std::process;
     use daemon::SchemeDaemon;
     use mcp_scheme::scheme_bridge::McpSchemeBridge;
-    use redox_scheme::{scheme::{SchemeState, SchemeSync}, RequestKind, SignalBehavior, Socket};
+    use redox_scheme::{
+        scheme::{SchemeState, SchemeSync},
+        RequestKind, SignalBehavior, Socket,
+    };
+    use std::process;
 
     fn run(daemon: SchemeDaemon) -> ! {
         let socket = Socket::create().expect("mcpd: failed to create mcp: scheme");
@@ -126,7 +129,9 @@ mod linux_test {
             }
         }
 
-        scheme.close(handle).map_err(|e| format!("close error: {}", e))?;
+        scheme
+            .close(handle)
+            .map_err(|e| format!("close error: {}", e))?;
         Ok(())
     }
 }
@@ -142,7 +147,7 @@ mod linux_test {
 /// * `Failed(err)` — always refuses to boot (any build profile). The
 ///   process exits with code 78 (sysexits.h `EX_CONFIG`).
 fn boot_gate() {
-    use mcpd_authority_shim::{BootGateOutcome, verify_from_env};
+    use mcpd_authority_shim::{verify_from_env, BootGateOutcome};
     match verify_from_env() {
         BootGateOutcome::Verified => {
             eprintln!("mcpd: boot-gate OK — policy hash verified");
@@ -167,6 +172,60 @@ fn boot_gate() {
     }
 }
 
+const SANITIZER_POLICY_PATH: &str = "/etc/acos/policy.md";
+
+#[derive(Debug, Eq, PartialEq)]
+enum PolicyFileStatus {
+    Present,
+    Missing,
+    Empty,
+    Unreadable,
+}
+
+fn assess_policy_file(path: &std::path::Path) -> PolicyFileStatus {
+    match std::fs::read_to_string(path) {
+        Ok(content) if content.trim().is_empty() => PolicyFileStatus::Empty,
+        Ok(_) => PolicyFileStatus::Present,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => PolicyFileStatus::Missing,
+        Err(_) => PolicyFileStatus::Unreadable,
+    }
+}
+
+/// WS2.M7 — sanitizer policy source decision.
+///
+/// The production sanitizer policy belongs to `mcpd`, not to the host-side
+/// Hermes Agent. Development builds may boot without the image policy file so
+/// local `cargo test` and stdin/stdout mode stay usable, but production builds
+/// fail closed before the `mcp:` scheme is registered.
+fn verify_policy_files_or_die() {
+    match assess_policy_file(std::path::Path::new(SANITIZER_POLICY_PATH)) {
+        PolicyFileStatus::Present => {
+            eprintln!("mcpd: sanitizer policy OK — {SANITIZER_POLICY_PATH}");
+        }
+        PolicyFileStatus::Missing => {
+            #[cfg(feature = "production")]
+            {
+                eprintln!(
+                    "mcpd: FATAL — production build requires sanitizer policy {SANITIZER_POLICY_PATH}"
+                );
+                std::process::exit(78);
+            }
+            #[cfg(not(feature = "production"))]
+            {
+                eprintln!(
+                    "mcpd: WARNING — sanitizer policy missing in development build: {SANITIZER_POLICY_PATH}"
+                );
+            }
+        }
+        PolicyFileStatus::Empty | PolicyFileStatus::Unreadable => {
+            eprintln!(
+                "mcpd: FATAL — sanitizer policy is empty or unreadable: {SANITIZER_POLICY_PATH}"
+            );
+            std::process::exit(78);
+        }
+    }
+}
+
 fn init_observability_redaction() -> mcpd_observability::redact::BootSalt {
     let salt = mcpd_observability::redact::BootSalt::generate();
     eprintln!("mcpd: observability redaction boot-salt initialized");
@@ -175,6 +234,7 @@ fn init_observability_redaction() -> mcpd_observability::redact::BootSalt {
 
 fn main() {
     boot_gate();
+    verify_policy_files_or_die();
     let _observability_redaction_salt = init_observability_redaction();
 
     #[cfg(feature = "redox")]
@@ -186,5 +246,45 @@ fn main() {
             eprintln!("mcpd: fatal error: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{assess_policy_file, PolicyFileStatus};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_policy_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "acos_ws2_m7_{name}_{}_{}.policy",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn sanitizer_policy_file_detects_present_policy() {
+        let path = temp_policy_path("present");
+        fs::write(&path, "# ACOS sanitizer policy\nallow: parity-v2\n").unwrap();
+        assert_eq!(assess_policy_file(&path), PolicyFileStatus::Present);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sanitizer_policy_file_detects_empty_policy() {
+        let path = temp_policy_path("empty");
+        fs::write(&path, "   \n\t").unwrap();
+        assert_eq!(assess_policy_file(&path), PolicyFileStatus::Empty);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sanitizer_policy_file_detects_missing_policy() {
+        let path = temp_policy_path("missing");
+        assert_eq!(assess_policy_file(&path), PolicyFileStatus::Missing);
     }
 }
