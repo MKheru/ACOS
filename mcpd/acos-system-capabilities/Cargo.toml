@@ -1,0 +1,12 @@
+[package]
+name = "acos-system-capabilities"
+version = "0.1.0"
+edition = "2021"
+description = "Typed system capability grants for ACOS services"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
