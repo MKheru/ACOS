@@ -135,6 +135,67 @@ def _build_argv(job):
     raise ValueError(f"unknown job kind: {job.kind}")
 
 
+def _kill_user_containers_started_after(started_at: float) -> int:
+    """Kill rootless podman containers spawned during this job.
+
+    Rootless podman containers detach from the parent bash pgroup, so the
+    SIGTERM/killpg in _run_job() leaves the actual build container running
+    (the 2026-05-16 02:36 incident — `make r.echo` survived a /cancel and
+    kept compiling libicu in the background for 10+ minutes).
+
+    Fix: after killpg, query `podman ps` (rootless, so only sees the calling
+    user's containers) and kill any container whose StartedAt >= job
+    started_at minus a small fudge. Returns the number of containers killed.
+
+    Best-effort: failures are swallowed because /cancel is already a
+    degraded path.
+    """
+    try:
+        result = subprocess.run(
+            ["podman", "ps", "--format", "{{.ID}} {{.StartedAt}}", "--filter", "status=running"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    killed = 0
+    cutoff = started_at - 5  # fudge for clock skew
+    for line in (result.stdout or "").splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            continue
+        cid, started_str = parts
+        # Podman emits StartedAt in two possible formats depending on version:
+        # - integer unix epoch like "1778949907" (podman 4.x with rootless)
+        # - human-readable "2026-05-16 12:34:56 +0000 UTC"
+        # Try int first, fall back to GNU date for the second form.
+        try:
+            container_unix = float(started_str)
+        except ValueError:
+            try:
+                date_proc = subprocess.run(
+                    ["date", "-d", started_str, "+%s"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if date_proc.returncode != 0:
+                    continue
+                container_unix = float(date_proc.stdout.strip())
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                continue
+        if container_unix >= cutoff:
+            try:
+                # Use SIGKILL — make / cookbook ignore SIGTERM under TTY-less stdin,
+                # leaving zombie containers. /cancel is already an aggressive
+                # operation; we don't owe the build a clean shutdown.
+                subprocess.run(
+                    ["podman", "kill", "--signal", "KILL", cid],
+                    capture_output=True, timeout=15,
+                )
+                killed += 1
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    return killed
+
+
 def _run_job(job):
     """Worker that runs a job to completion. Called in a thread."""
     try:
@@ -189,7 +250,9 @@ def _run_job(job):
             job.exit_code = rc
             job.state = "completed" if rc == 0 else "failed"
     except subprocess.TimeoutExpired:
-        # Kill the whole process group.
+        # Kill the whole process group. Then also kill any rootless podman
+        # container the build spawned — rootless podman detaches from the
+        # pgroup so killpg alone is not enough (see _kill_user_containers_started_after).
         try:
             os.killpg(proc.pid, signal.SIGTERM)
             try:
@@ -198,6 +261,10 @@ def _run_job(job):
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
         except (OSError, ProcessLookupError):
+            pass
+        try:
+            _kill_user_containers_started_after(job.started_at)
+        except Exception:
             pass
         with job._lock:
             job.exit_code = -4
@@ -405,9 +472,20 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ProcessLookupError) as e:
                 self._send_json(500, {"error": f"kill failed: {e}"})
                 return
+            # Also kill any rootless podman container the build spawned —
+            # rootless podman detaches from the pgroup so killpg alone leaves
+            # them running (incident 2026-05-16 02:36).
+            killed = 0
+            try:
+                killed = _kill_user_containers_started_after(job.started_at)
+            except Exception:
+                pass
             with job._lock:
                 job.state = "cancelled"
-            self._send_json(202, {"id": job_id, "state": "cancelled"})
+            self._send_json(202, {
+                "id": job_id, "state": "cancelled",
+                "podman_containers_killed": killed,
+            })
             return
 
         self._send_json(404, {"error": "not found", "path": u.path})
