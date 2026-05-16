@@ -33,6 +33,7 @@ members = [
     "acos-authority-types",
     "acos-system-capabilities",
     "guardian-authority",
+    "llm-runtime-api",
     "mcp_scheme",
     "mcpd-authority-shim",
     "mcpd-observability",
