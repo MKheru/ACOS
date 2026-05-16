@@ -135,6 +135,18 @@ name = "llm-runtime-api"
 version = "0.1.0"
 
 [[package]]
+name = "mcp-bridge"
+version = "0.1.0"
+
+[[package]]
+name = "mcp-fabric"
+version = "0.1.0"
+dependencies = [
+ "acos-authority-types",
+ "acos-system-capabilities",
+]
+
+[[package]]
 name = "mcp-scheme"
 version = "0.1.0"
 dependencies = [

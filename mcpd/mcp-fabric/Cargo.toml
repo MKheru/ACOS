@@ -1,0 +1,10 @@
+[package]
+name = "mcp-fabric"
+version = "0.1.0"
+edition = "2021"
+description = "Capability fabric primitives for ACOS MCP services"
+
+[dependencies]
+acos-authority-types = { path = "../acos-authority-types" }
+acos-system-capabilities = { path = "../acos-system-capabilities" }
+
