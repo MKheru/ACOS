@@ -167,8 +167,15 @@ fn boot_gate() {
     }
 }
 
+fn init_observability_redaction() -> mcpd_observability::redact::BootSalt {
+    let salt = mcpd_observability::redact::BootSalt::generate();
+    eprintln!("mcpd: observability redaction boot-salt initialized");
+    salt
+}
+
 fn main() {
     boot_gate();
+    let _observability_redaction_salt = init_observability_redaction();
 
     #[cfg(feature = "redox")]
     redox_daemon::start();
