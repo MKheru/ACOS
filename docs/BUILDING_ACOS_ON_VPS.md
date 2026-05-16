@@ -266,20 +266,67 @@ qemu in PATH and operates on `/home/hermes/acos/`.
 | `POST /git_diff` | `git diff <args>` | `{"args": ["HEAD~1"]}` |
 | `POST /git_log` | `git log --oneline -20 <args>` | `{"args": []}` |
 
-### 7.2 What AH **cannot** do today (and the fix)
+### 7.2 What AH can do via `acos-builder.service` (added 2026-05-16)
 
-- **Full image build** (`make all`). The hermes-side clone needs the
-  cookbook drift fixes, and the runner's `/build` endpoint only does the
-  inject flow. **Fix**: add `POST /build_image` to `acos-runner` that
-  calls `make all CONFIG_NAME=acos-bare CI=1` in `/home/hermes/acos/base/`.
-- **Single-recipe rebuild** (`make r.<recipe>`). **Fix**: add `POST
-  /build_recipe` with body `{"recipe": "base-initfs", "clean": true}`.
-- **`apt install` or `pip install`**. Outside hermes's write paths.
+Full image builds and single-recipe rebuilds were missing from
+`acos-runner`. They now live in a **second** localhost daemon,
+`acos-builder.service` (port `8772`), with an async job model — POST
+returns a `job_id` immediately, AH polls `job_status` until completion.
 
-When AH proposes new endpoints, edit `/opt/acos-runner/server.py`,
-`sudo systemctl restart acos-runner`, smoke-test with `curl`. The service
-is intentionally small and the file is owned by root (so AH cannot
-self-modify it — a guardrail).
+| Method+Path | What it does | Body shape |
+|---|---|---|
+| `GET /health` | Liveness | (none) |
+| `POST /build_image` | `make all CONFIG_NAME=acos-bare CI=1` (~30-60 min cold, ~3-5 min warm) | `{"timeout_s": 5400}` |
+| `POST /build_recipe` | `make {r,cr,ucr}.<recipe> CI=1` (single recipe) | `{"recipe": "mcpd", "clean": "r", "timeout_s": 1800}` |
+| `POST /sync` | `git fetch + checkout + pull + setup-acos.sh` | `{"ref": "main"}` |
+| `GET /jobs` | List all jobs | (none) |
+| `GET /jobs/{id}` | One job's state | (none) |
+| `GET /jobs/{id}/log?bytes=N` | Tail of build log | (none) |
+| `POST /jobs/{id}/cancel` | SIGTERM the job | (none) |
+
+AH calls this from Python via `tools.local_runners.acos_builder_call`
+(snippet at `infra/ah-tools/`). Workflow:
+
+```python
+# 1. Submit
+r = acos_builder_call({"endpoint": "build_image", "body": {"timeout_s": 5400}})
+job_id = json.loads(r)["id"]
+
+# 2. Poll
+while True:
+    s = json.loads(acos_builder_call({"endpoint": "job_status", "body": {"id": job_id}}))
+    if s["state"] in ("completed", "failed", "cancelled", "timeout"):
+        break
+    time.sleep(30)
+
+# 3. On failure, fetch log tail
+if s["state"] != "completed":
+    log = json.loads(acos_builder_call({"endpoint": "job_log", "body": {"id": job_id, "bytes": 50000}}))
+```
+
+**Install on the VPS:**
+
+```bash
+cd ACOS/infra/acos-builder && sudo ./install.sh
+```
+
+Idempotent. See `infra/acos-builder/README.md` for the full reference
+including the `NoNewPrivileges=no` caveat (required for FUSE/rootless podman).
+
+**Install the AH-side tool:**
+
+```bash
+sudo -u hermes bash -c "cat ACOS/infra/ah-tools/acos_builder_call.py.snippet >> /home/hermes/hermes-agent/tools/local_runners.py"
+sudo systemctl restart hermes-agent.service
+```
+
+### 7.3 Adding endpoints in the future
+
+When AH proposes new endpoints, edit `/opt/acos-builder/server.py`,
+`sudo systemctl restart acos-builder`, smoke-test with `curl`. The
+service is intentionally small and `server.py` is owned by root (so AH
+cannot self-modify it — a guardrail). Then push the updated `server.py`
+back to `infra/acos-builder/` and PR.
 
 ---
 

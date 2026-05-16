@@ -1,0 +1,145 @@
+# --- ACOS BUILDER TOOL — start ---
+# Native HTTP tool for acos-builder.service (127.0.0.1:8772).
+# Pattern mirrors acos_runner_call above but talks to the async, job-based
+# image-builder service instead of the synchronous runner.
+
+ACOS_BUILDER_URL = "http://127.0.0.1:8772"
+
+# Endpoints AH can invoke. POST creates a job, GET reads job state/log.
+ACOS_BUILDER_ENDPOINTS = {
+    # POSTs that create a job — return {id, kind, state: "pending"}
+    "build_image",     # body: {timeout_s?: 60..7200, default 5400}
+    "build_recipe",    # body: {recipe: str, clean?: "r"|"cr"|"ucr" (default "r"), timeout_s?}
+    "sync",            # body: {ref?: str (default "main"), timeout_s?}
+    # GETs that read state (no body)
+    "health",          # /health
+    "list_jobs",       # /jobs
+    "job_status",      # /jobs/{id} — needs body: {id: "..."}
+    "job_log",         # /jobs/{id}/log — body: {id: "...", bytes?: 1024..1000000}
+    # POSTs that act on existing jobs
+    "cancel",          # /jobs/{id}/cancel — body: {id: "..."}
+}
+
+_JOB_ID_RE = __import__("re").compile(r"^[a-f0-9]{32}$")
+
+
+def _builder_call(endpoint: str, body: dict, timeout: int) -> dict:
+    """Dispatch a single ACOS_BUILDER endpoint."""
+    if endpoint == "health":
+        return _http_get_json(ACOS_BUILDER_URL, "/health", timeout)
+    if endpoint == "list_jobs":
+        return _http_get_json(ACOS_BUILDER_URL, "/jobs", timeout)
+    if endpoint == "job_status":
+        jid = str(body.get("id", "")).strip()
+        if not _JOB_ID_RE.match(jid):
+            return {"_error": "job_status requires 32-hex 'id'", "_status": -10}
+        return _http_get_json(ACOS_BUILDER_URL, f"/jobs/{jid}", timeout)
+    if endpoint == "job_log":
+        jid = str(body.get("id", "")).strip()
+        if not _JOB_ID_RE.match(jid):
+            return {"_error": "job_log requires 32-hex 'id'", "_status": -10}
+        nb = int(body.get("bytes", 32000))
+        nb = max(1024, min(nb, 1_000_000))
+        return _http_get_json(ACOS_BUILDER_URL, f"/jobs/{jid}/log?bytes={nb}", timeout)
+    if endpoint == "cancel":
+        jid = str(body.get("id", "")).strip()
+        if not _JOB_ID_RE.match(jid):
+            return {"_error": "cancel requires 32-hex 'id'", "_status": -10}
+        return _http_post_json(ACOS_BUILDER_URL, f"/jobs/{jid}/cancel", {}, timeout)
+    # POSTs that create a job
+    if endpoint in ("build_image", "build_recipe", "sync"):
+        return _http_post_json(ACOS_BUILDER_URL, f"/{endpoint}", body, timeout)
+    return {"_error": f"unknown endpoint '{endpoint}'", "_status": -11}
+
+
+def acos_builder_call(args: dict, **_kw) -> str:
+    """Call acos-builder.service and return JSON string.
+
+    All endpoints are non-blocking by design: POSTs return immediately
+    with a job_id; AH should poll job_status / job_log to track progress.
+    """
+    args = args or {}
+    endpoint = str(args.get("endpoint", "")).strip()
+    if endpoint not in ACOS_BUILDER_ENDPOINTS:
+        return tool_error(
+            f"unknown endpoint '{endpoint}'. "
+            f"Available: {sorted(ACOS_BUILDER_ENDPOINTS)}"
+        )
+    body = args.get("body") or {}
+    if not isinstance(body, dict):
+        return tool_error("'body' must be a dict")
+    # Builder endpoints are quick (return job_id immediately) — short timeout OK.
+    timeout = int(body.get("_http_timeout_s", 30))
+    timeout = max(5, min(timeout, 120))
+    result = _builder_call(endpoint, body, timeout)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def acos_builder_check() -> bool:
+    """Available iff acos-builder.service responds."""
+    try:
+        h = _http_get_json(ACOS_BUILDER_URL, "/health", timeout=3)
+        return h.get("status") == "ok"
+    except Exception:
+        return False
+
+
+ACOS_BUILDER_SCHEMA = {
+    "name": "acos_builder_call",
+    "description": (
+        "Launch and monitor ACOS image / recipe builds via "
+        "acos-builder.service (127.0.0.1:8772) on the VPS. This is the "
+        "ONLY way for AH to trigger a `make all` (full image build) or "
+        "`make r.<recipe>` (single recipe rebuild) on the hermes-side "
+        "clone at /home/hermes/acos/base, because the cookbook tree is "
+        "outside hermes-agent's SECCOMP-allowed write paths.\n\n"
+        "Builds run ASYNC — POST endpoints return a job_id immediately, "
+        "then poll job_status until state ∈ {completed, failed, cancelled, "
+        "timeout}. Full image builds take 30-60 minutes; poll every 30-60s. "
+        "Use job_log to tail build output without waiting.\n\n"
+        "Read docs/BUILDING_ACOS_ON_VPS.md in the repo before invoking — "
+        "covers CI=1 (mandatory), the TWO cookbook clones (kheru-side vs "
+        "hermes-side), the 5 cookbook drift fixes (patches 0009-0013), "
+        "and the canonical troubleshooting recipes.\n\n"
+        "Endpoints:\n"
+        "  - 'health'        (body: {}) → liveness + tool inventory\n"
+        "  - 'build_image'   (body: {timeout_s?: 60..7200}) → make all CONFIG_NAME=acos-bare CI=1\n"
+        "  - 'build_recipe'  (body: {recipe: str, clean?: 'r'|'cr'|'ucr', timeout_s?: 30..3600})\n"
+        "  - 'sync'          (body: {ref?: str (default 'main'), timeout_s?: 30..1800}) → git pull + setup-acos.sh\n"
+        "  - 'list_jobs'     (body: {}) → list every job and its state\n"
+        "  - 'job_status'    (body: {id: '...'}) → fetch one job's full state\n"
+        "  - 'job_log'       (body: {id: '...', bytes?: 1024..1000000}) → tail of build log\n"
+        "  - 'cancel'        (body: {id: '...'}) → SIGTERM the running build\n\n"
+        "Workflow: POST build_image → grab id → poll job_status every 30-60s → on completed, fetch job_log for confirmation; on failed, fetch job_log to diagnose."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "endpoint": {
+                "type": "string",
+                "enum": sorted(ACOS_BUILDER_ENDPOINTS),
+                "description": "Which acos-builder endpoint to invoke.",
+            },
+            "body": {
+                "type": "object",
+                "description": (
+                    "Endpoint-specific JSON body. See description for each "
+                    "endpoint's expected fields. Default: {}."
+                ),
+                "default": {},
+            },
+        },
+        "required": ["endpoint"],
+    },
+}
+
+
+registry.register(
+    name="acos_builder_call",
+    toolset="terminal",  # same toolset family as acos_runner_call
+    schema=ACOS_BUILDER_SCHEMA,
+    handler=acos_builder_call,
+    check_fn=acos_builder_check,
+    emoji="🏗",
+)
+# --- ACOS BUILDER TOOL — end ---
