@@ -22,5 +22,15 @@ libc = "0.2"
 # Redox-only dependencies — resolved only when targeting Redox (cross-compile env)
 [target.'cfg(target_os = "redox")'.dependencies]
 redox-scheme = "0.11"
-daemon = { path = "../../../core/base/source/daemon" }
+daemon = { path = "../base/recipes/core/base/source/daemon" }
 libredox = "0.1"
+
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "acos-authority-types",
+    "acos-system-capabilities",
+    "mcp_scheme",
+    "mcpd-authority-shim",
+]
