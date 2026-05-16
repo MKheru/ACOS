@@ -109,6 +109,10 @@ system, process, memory, file, file_write, file_search, log, config, echo, mcp, 
 4. **Real QEMU testing** — no mock-validated features, cross-compile → inject → boot → verify
 5. **Direct network access** — ACOS uses its own NIC, no proxy scripts on host
 
+## Later WS13 status correction
+
+The Web GUI Remote-First track is `doc_only / awaiting WS11`: this session verified MCP/LLM/Guardian plumbing only. It did not complete, design-freeze, or validate a web dashboard. Phase 1 dashboard work remains blocked until WS11 exposes `observability.recent` over MCP; mock dashboard data must not be treated as a completion signal.
+
 ## Files Modified
 
 ### ion shell (`recipes/core/ion/source/`)
