@@ -1,0 +1,9 @@
+[package]
+name = "guardian-authority"
+version = "0.1.0"
+edition = "2021"
+description = "Guardian authority policy, audit observation, signed decisions, and action bridge for ACOS"
+
+[dependencies]
+acos-authority-types = { path = "../acos-authority-types" }
+mcpd-authority-shim = { path = "../mcpd-authority-shim" }
