@@ -24,6 +24,7 @@ regex = "1"
 acos-authority-types = { path = "../acos-authority-types" }
 # WS1.M2 — audit ring buffer + bootstrap (wired into McpScheme::write).
 mcpd-authority-shim = { path = "../mcpd-authority-shim" }
+mcpd-observability = { path = "../mcpd-observability" }
 redox-scheme = { version = "0.11", optional = true }
 libredox = { version = "0.1", optional = true }
 syscall = { version = "0.7", optional = true, package = "redox_syscall" }
