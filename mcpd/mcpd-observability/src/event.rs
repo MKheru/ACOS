@@ -32,6 +32,7 @@ impl SpanId {
 pub enum ObservationKind {
     Intent,
     Result,
+    Anomaly,
 }
 
 /// Final status recorded for a routed MCP request.
@@ -53,6 +54,10 @@ pub struct ObservationEvent {
     pub latency_us: Option<u64>,
     pub error_code: Option<i64>,
     pub status: Option<ResultStatus>,
+    pub anomaly_type: Option<String>,
+    pub severity: Option<String>,
+    pub description: Option<String>,
+    pub details_json: Option<String>,
 }
 
 impl ObservationEvent {
@@ -66,6 +71,10 @@ impl ObservationEvent {
             latency_us: None,
             error_code: None,
             status: None,
+            anomaly_type: None,
+            severity: None,
+            description: None,
+            details_json: None,
         }
     }
 
@@ -87,6 +96,34 @@ impl ObservationEvent {
             latency_us: Some(latency_us),
             error_code,
             status: Some(status),
+            anomaly_type: None,
+            severity: None,
+            description: None,
+            details_json: None,
+        }
+    }
+
+    pub fn anomaly(
+        trace_id: TraceId,
+        span_id: SpanId,
+        anomaly_type: &str,
+        severity: &str,
+        description: &str,
+        details_json: String,
+    ) -> Self {
+        Self {
+            trace_id,
+            span_id,
+            kind: ObservationKind::Anomaly,
+            service: "guardian".to_string(),
+            method: "anomaly".to_string(),
+            latency_us: None,
+            error_code: None,
+            status: None,
+            anomaly_type: Some(anomaly_type.to_string()),
+            severity: Some(severity.to_string()),
+            description: Some(description.to_string()),
+            details_json: Some(details_json),
         }
     }
 }

@@ -7,6 +7,7 @@
 use std::sync::Mutex;
 
 use acos_authority_types::{AuditEvent, DenyCode, Verdict};
+use mcpd_observability::{append_event, ObservationEvent, SpanId, TraceId};
 use serde_json::{json, Value};
 
 use crate::handler::ServiceHandler;
@@ -452,6 +453,15 @@ impl GuardianHandler {
             None,
             0,
         );
+        let observation_event = ObservationEvent::anomaly(
+            TraceId(anomaly.id as u64),
+            SpanId::next(),
+            anomaly.anomaly_type.as_str(),
+            anomaly.severity.as_str(),
+            &anomaly.description,
+            anomaly.anomaly_type.to_json().to_string(),
+        );
+        append_event(observation_event);
         anomalies.push(anomaly);
         self.audit_events
             .lock()

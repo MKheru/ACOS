@@ -19,11 +19,10 @@ use serde_json::{json, Value};
 
 use acos_authority_types::{AuditEvent, Verdict};
 use mcpd_authority_shim::AuthorityShim;
+use mcpd_observability::{recent_events, ObservationEvent, ObservationKind, ResultStatus};
 
 use crate::handler::{HandlerPolicy, ServiceHandler};
-use crate::protocol::{
-    JsonRpcRequest, JsonRpcResponse, INVALID_PARAMS, METHOD_NOT_FOUND,
-};
+use crate::protocol::{JsonRpcRequest, JsonRpcResponse, INVALID_PARAMS, METHOD_NOT_FOUND};
 use crate::McpPath;
 
 /// Default cap on the number of events returned by `recent` when the
@@ -61,6 +60,38 @@ impl ObservabilityHandler {
             "latency_us": event.latency_us,
         })
     }
+
+    fn observation_event_to_json(event: &ObservationEvent) -> Value {
+        let kind = match event.kind {
+            ObservationKind::Intent => "intent",
+            ObservationKind::Result => "result",
+            ObservationKind::Anomaly => "anomaly",
+        };
+        let status = event.status.map(|status| match status {
+            ResultStatus::Ok => "ok",
+            ResultStatus::Error => "error",
+            ResultStatus::IncompleteOrPanic => "incomplete_or_panic",
+        });
+        let details = event
+            .details_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok());
+
+        json!({
+            "trace_id": event.trace_id.0.to_string(),
+            "span_id": event.span_id.0.to_string(),
+            "service": event.service,
+            "method": event.method,
+            "kind": kind,
+            "latency_us": event.latency_us,
+            "error_code": event.error_code,
+            "status": status,
+            "anomaly_type": event.anomaly_type,
+            "severity": event.severity,
+            "description": event.description,
+            "details": details,
+        })
+    }
 }
 
 fn verdict_label(verdict: &Verdict) -> String {
@@ -87,13 +118,21 @@ impl ServiceHandler for ObservabilityHandler {
                 let total_in_ring = snap.len();
                 let total_appends = self.shim.audit_ring().total_appends();
 
-                // newest first, then bounded.
-                let events: Vec<Value> = snap
-                    .iter()
-                    .rev()
-                    .take(limit)
-                    .map(Self::event_to_json)
-                    .collect();
+                let events: Vec<Value> = if snap.is_empty() {
+                    recent_events(limit)
+                        .iter()
+                        .rev()
+                        .filter(|event| event.kind == ObservationKind::Anomaly)
+                        .map(Self::observation_event_to_json)
+                        .collect()
+                } else {
+                    // newest first, then bounded.
+                    snap.iter()
+                        .rev()
+                        .take(limit)
+                        .map(Self::event_to_json)
+                        .collect()
+                };
 
                 JsonRpcResponse::success(
                     request.id.clone(),
@@ -170,7 +209,10 @@ impl ServiceHandler for ObservabilityHandler {
             _ => JsonRpcResponse::error(
                 request.id.clone(),
                 METHOD_NOT_FOUND,
-                format!("Method '{}' not found in observability service", request.method),
+                format!(
+                    "Method '{}' not found in observability service",
+                    request.method
+                ),
             ),
         }
     }
@@ -195,6 +237,8 @@ mod tests {
     use mcpd_authority_shim::AuthorityShim;
     use serde_json::json;
 
+    use crate::guardian_handler::{AnomalyType, GuardianHandler, Severity};
+
     fn make_request(method: &str, params: Value) -> JsonRpcRequest {
         JsonRpcRequest {
             jsonrpc: "2.0".into(),
@@ -209,6 +253,7 @@ mod tests {
     }
 
     fn shim_with_events(events: Vec<AuditEvent>) -> Arc<AuthorityShim> {
+        mcpd_observability::clear_events();
         let shim = Arc::new(AuthorityShim::new());
         for e in events {
             shim.record(e).unwrap();
@@ -217,14 +262,24 @@ mod tests {
     }
 
     fn ev(trace_id: u128, action: &str, verdict: Verdict) -> AuditEvent {
-        AuditEvent::new(trace_id, "test".to_string(), action.to_string(), verdict, None, 0)
+        AuditEvent::new(
+            trace_id,
+            "test".to_string(),
+            action.to_string(),
+            verdict,
+            None,
+            0,
+        )
     }
 
     #[test]
     fn declares_requires_capability_for_every_method() {
         let h = ObservabilityHandler::new(Arc::new(AuthorityShim::new()));
         for m in ["recent", "by_trace", "stats"] {
-            assert!(matches!(h.required_policy(m), HandlerPolicy::RequiresCapability));
+            assert!(matches!(
+                h.required_policy(m),
+                HandlerPolicy::RequiresCapability
+            ));
         }
     }
 
@@ -271,10 +326,7 @@ mod tests {
         // exactly the ring size, not the limit.
         let shim = shim_with_events(vec![ev(1, "a", Verdict::Allow)]);
         let h = ObservabilityHandler::new(shim);
-        let resp = h.handle(
-            &path(),
-            &make_request("recent", json!({"limit": 99999u64})),
-        );
+        let resp = h.handle(&path(), &make_request("recent", json!({"limit": 99999u64})));
         let result = resp.result.unwrap();
         assert_eq!(result["events"].as_array().unwrap().len(), 1);
     }
@@ -287,10 +339,7 @@ mod tests {
             ev(3, "net", Verdict::Allow),
         ]);
         let h = ObservabilityHandler::new(shim);
-        let resp = h.handle(
-            &path(),
-            &make_request("by_trace", json!({"trace_id": "2"})),
-        );
+        let resp = h.handle(&path(), &make_request("by_trace", json!({"trace_id": "2"})));
         let result = resp.result.unwrap();
         let events = result["events"].as_array().unwrap();
         assert_eq!(events.len(), 1);
@@ -391,6 +440,36 @@ mod tests {
         // Both reference the same trace_id (string-encoded u128).
         assert_eq!(events[0]["trace_id"], "42");
         assert_eq!(events[1]["trace_id"], "42");
+    }
+
+    #[test]
+    fn guardian_detected_anomaly_is_visible_via_observability_recent() {
+        mcpd_observability::clear_events();
+        let guardian = GuardianHandler::new(Box::new(|_service, _method, _params| {
+            JsonRpcResponse::success(Some(json!(1)), json!({"text": "{}"}))
+        }));
+        guardian.add_anomaly(
+            AnomalyType::ServiceDown {
+                service: "guardian-test".into(),
+            },
+            Severity::Critical,
+            "guardian-test is down".into(),
+        );
+
+        let h = ObservabilityHandler::new(Arc::new(AuthorityShim::new()));
+        let resp = h.handle(&path(), &make_request("recent", json!({"limit": 5})));
+        let result = resp.result.unwrap();
+        let events = result["events"].as_array().unwrap();
+        let anomaly = events
+            .iter()
+            .find(|event| event["kind"] == "anomaly")
+            .expect("guardian anomaly should be exported through observability.recent");
+        assert_eq!(anomaly["service"], "guardian");
+        assert_eq!(anomaly["method"], "anomaly");
+        assert_eq!(anomaly["anomaly_type"], "service_down");
+        assert_eq!(anomaly["severity"], "critical");
+        assert_eq!(anomaly["description"], "guardian-test is down");
+        assert_eq!(anomaly["details"]["service"], "guardian-test");
     }
 
     #[test]
