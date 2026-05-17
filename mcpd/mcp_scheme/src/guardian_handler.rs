@@ -6,10 +6,11 @@
 
 use std::sync::Mutex;
 
+use acos_authority_types::{AuditEvent, DenyCode, Verdict};
 use serde_json::{json, Value};
 
 use crate::handler::ServiceHandler;
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+use crate::protocol::{JsonRpcRequest, JsonRpcResponse, INVALID_PARAMS, METHOD_NOT_FOUND};
 use crate::McpPath;
 
 /// Dispatch function type: (service, method, params) -> JsonRpcResponse
@@ -80,14 +81,37 @@ pub struct GuardianState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnomalyType {
-    ProcessCrash { pid: u64, name: String },
-    MemoryThreshold { percent: f32, threshold: f32 },
-    LogError { count: usize, sample: String },
-    FileChange { path: String, change_type: String },
-    ServiceDown { service: String },
-    NetworkAnomaly { description: String, source_ip: String },
-    HighTraffic { bytes_per_sec: u64, threshold: u64 },
-    UnauthorizedConnection { host: String, port: u16 },
+    ProcessCrash {
+        pid: u64,
+        name: String,
+    },
+    MemoryThreshold {
+        percent: f32,
+        threshold: f32,
+    },
+    LogError {
+        count: usize,
+        sample: String,
+    },
+    FileChange {
+        path: String,
+        change_type: String,
+    },
+    ServiceDown {
+        service: String,
+    },
+    NetworkAnomaly {
+        description: String,
+        source_ip: String,
+    },
+    HighTraffic {
+        bytes_per_sec: u64,
+        threshold: u64,
+    },
+    UnauthorizedConnection {
+        host: String,
+        port: u16,
+    },
 }
 
 impl AnomalyType {
@@ -121,10 +145,16 @@ impl AnomalyType {
             AnomalyType::ServiceDown { service } => {
                 json!({"type": "service_down", "service": service})
             }
-            AnomalyType::NetworkAnomaly { description, source_ip } => {
+            AnomalyType::NetworkAnomaly {
+                description,
+                source_ip,
+            } => {
                 json!({"type": "network_anomaly", "description": description, "source_ip": source_ip})
             }
-            AnomalyType::HighTraffic { bytes_per_sec, threshold } => {
+            AnomalyType::HighTraffic {
+                bytes_per_sec,
+                threshold,
+            } => {
                 json!({"type": "high_traffic", "bytes_per_sec": bytes_per_sec, "threshold": threshold})
             }
             AnomalyType::UnauthorizedConnection { host, port } => {
@@ -319,6 +349,7 @@ impl GuardianConfig {
 pub struct GuardianHandler {
     state: Mutex<GuardianState>,
     anomalies: Mutex<Vec<Anomaly>>,
+    audit_events: Mutex<Vec<AuditEvent>>,
     config: Mutex<GuardianConfig>,
     dispatch: DispatchFn,
     next_anomaly_id: Mutex<u32>,
@@ -337,6 +368,7 @@ impl GuardianHandler {
                 current_metrics: SystemSnapshot::default(),
             }),
             anomalies: Mutex::new(Vec::new()),
+            audit_events: Mutex::new(Vec::new()),
             config: Mutex::new(GuardianConfig::default()),
             dispatch,
             next_anomaly_id: Mutex::new(1),
@@ -387,6 +419,46 @@ impl GuardianHandler {
             .any(|a| !a.resolved && a.anomaly_type.as_str() == anomaly_type_tag)
     }
 
+    fn audit_verdict_for(severity: &Severity) -> Verdict {
+        match severity {
+            Severity::Critical => Verdict::Deny(DenyCode::PolicyForbids),
+            Severity::Warning | Severity::Info => Verdict::Allow,
+        }
+    }
+
+    fn audit_event_to_json(event: &AuditEvent) -> Value {
+        let verdict = match &event.verdict {
+            Verdict::Allow => json!({"type": "allow"}),
+            Verdict::Deny(code) => json!({"type": "deny", "code": format!("{:?}", code)}),
+            _ => json!({"type": "unknown"}),
+        };
+        json!({
+            "trace_id": event.trace_id.to_string(),
+            "caller": event.caller.clone(),
+            "action": event.action.clone(),
+            "verdict": verdict,
+            "capability_used": event.capability_used.as_ref().map(|id| id.0),
+            "latency_us": event.latency_us,
+            "kind": event.kind.label(),
+        })
+    }
+
+    fn record_anomaly(&self, anomalies: &mut Vec<Anomaly>, anomaly: Anomaly) {
+        let audit_event = AuditEvent::new(
+            anomaly.id as u128,
+            "guardian".to_string(),
+            format!("guardian.anomaly.{}", anomaly.anomaly_type.as_str()),
+            Self::audit_verdict_for(&anomaly.severity),
+            None,
+            0,
+        );
+        anomalies.push(anomaly);
+        self.audit_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(audit_event);
+    }
+
     /// Poll system services and build a health snapshot.
     fn handle_state(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
         let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
@@ -409,9 +481,21 @@ impl GuardianHandler {
                 for p in procs {
                     process_list.push(ProcessInfo {
                         pid: p.get("pid").and_then(|v| v.as_u64()).unwrap_or(0),
-                        name: p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        state: p.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        memory: p.get("memory").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        name: p
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        state: p
+                            .get("state")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        memory: p
+                            .get("memory")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                     });
                 }
             }
@@ -431,10 +515,7 @@ impl GuardianHandler {
 
             memory_used_mb = data.get("used_mb").and_then(|v| v.as_u64()).unwrap_or(0);
             memory_total_mb = data.get("total_mb").and_then(|v| v.as_u64()).unwrap_or(0);
-            memory_percent = data
-                .get("percent")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0) as f32;
+            memory_percent = data.get("percent").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
         }
 
         // Poll log errors
@@ -474,14 +555,18 @@ impl GuardianHandler {
         // Detect anomalies from this check (with deduplication)
         let ts = self.timestamp();
         let mut anomalies = self.anomalies.lock().unwrap_or_else(|e| e.into_inner());
-        let mut next_id = self.next_anomaly_id.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next_id = self
+            .next_anomaly_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         if memory_percent > threshold_mem {
             if Self::has_active_anomaly_of_type(&anomalies, "memory_threshold") {
                 // Update existing anomaly description/timestamp instead of creating duplicate
-                if let Some(existing) = anomalies.iter_mut().find(|a| {
-                    !a.resolved && a.anomaly_type.as_str() == "memory_threshold"
-                }) {
+                if let Some(existing) = anomalies
+                    .iter_mut()
+                    .find(|a| !a.resolved && a.anomaly_type.as_str() == "memory_threshold")
+                {
                     existing.description = format!(
                         "Memory usage {:.1}% exceeds threshold {:.1}%",
                         memory_percent, threshold_mem
@@ -491,7 +576,7 @@ impl GuardianHandler {
             } else {
                 let id = *next_id;
                 *next_id += 1;
-                anomalies.push(Anomaly {
+                let anomaly = Anomaly {
                     id,
                     anomaly_type: AnomalyType::MemoryThreshold {
                         percent: memory_percent,
@@ -511,15 +596,17 @@ impl GuardianHandler {
                     resolution: None,
                     user_response: None,
                     ai_consultation: None,
-                });
+                };
+                self.record_anomaly(&mut anomalies, anomaly);
             }
         }
 
         if log_errors_recent > threshold_log {
             if Self::has_active_anomaly_of_type(&anomalies, "log_error") {
-                if let Some(existing) = anomalies.iter_mut().find(|a| {
-                    !a.resolved && a.anomaly_type.as_str() == "log_error"
-                }) {
+                if let Some(existing) = anomalies
+                    .iter_mut()
+                    .find(|a| !a.resolved && a.anomaly_type.as_str() == "log_error")
+                {
                     existing.description = format!(
                         "{} recent log errors (threshold: {})",
                         log_errors_recent, threshold_log
@@ -529,7 +616,7 @@ impl GuardianHandler {
             } else {
                 let id = *next_id;
                 *next_id += 1;
-                anomalies.push(Anomaly {
+                let anomaly = Anomaly {
                     id,
                     anomaly_type: AnomalyType::LogError {
                         count: log_errors_recent,
@@ -545,7 +632,8 @@ impl GuardianHandler {
                     resolution: None,
                     user_response: None,
                     ai_consultation: None,
-                });
+                };
+                self.record_anomaly(&mut anomalies, anomaly);
             }
         }
 
@@ -664,13 +752,11 @@ impl GuardianHandler {
 
         let choice_num = match request.params.get("choice").and_then(|v| v.as_u64()) {
             Some(c) => c,
-            None => {
-                return JsonRpcResponse::error(
-                    request.id.clone(),
-                    INVALID_PARAMS,
-                    "missing required parameter 'choice' (1=ApplyFix, 2=Ignore, 3=GiveInstructions)",
-                )
-            }
+            None => return JsonRpcResponse::error(
+                request.id.clone(),
+                INVALID_PARAMS,
+                "missing required parameter 'choice' (1=ApplyFix, 2=Ignore, 3=GiveInstructions)",
+            ),
         };
 
         let choice = match ResponseChoice::from_u64(choice_num) {
@@ -782,7 +868,10 @@ impl GuardianHandler {
                     AnomalyType::NetworkAnomaly { source_ip, .. } => {
                         format!("acknowledged network anomaly from '{}'", source_ip)
                     }
-                    AnomalyType::HighTraffic { bytes_per_sec, threshold } => {
+                    AnomalyType::HighTraffic {
+                        bytes_per_sec,
+                        threshold,
+                    } => {
                         format!(
                             "acknowledged high traffic: {} B/s (threshold {} B/s)",
                             bytes_per_sec, threshold
@@ -1031,17 +1120,20 @@ impl GuardianHandler {
                         );
                     }
                 };
-                JsonRpcResponse::success(
-                    request.id.clone(),
-                    json!({ "key": k, "value": val }),
-                )
+                JsonRpcResponse::success(request.id.clone(), json!({ "key": k, "value": val }))
             }
             // Return full config
-            _ => JsonRpcResponse::success(
-                request.id.clone(),
-                json!({ "config": config.to_json() }),
-            ),
+            _ => {
+                JsonRpcResponse::success(request.id.clone(), json!({ "config": config.to_json() }))
+            }
         }
+    }
+
+    /// Return immutable audit events emitted alongside displayable anomalies.
+    fn handle_audit_events(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let events = self.audit_events.lock().unwrap_or_else(|e| e.into_inner());
+        let list: Vec<Value> = events.iter().map(Self::audit_event_to_json).collect();
+        JsonRpcResponse::success(request.id.clone(), json!({ "audit_events": list }))
     }
 
     /// Return resolved anomalies (history).
@@ -1122,7 +1214,10 @@ impl GuardianHandler {
 
         let ts = self.timestamp();
         let mut anomalies = self.anomalies.lock().unwrap_or_else(|e| e.into_inner());
-        let mut next_id = self.next_anomaly_id.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next_id = self
+            .next_anomaly_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         match event_type.as_str() {
             "connection" => {
@@ -1139,9 +1234,9 @@ impl GuardianHandler {
 
                 // Check blocked hosts — exact match or suffix match (e.g. ".evil.com" matches "x.evil.com")
                 let host_blocked = blocked_hosts.iter().any(|bh| {
-                    if bh.starts_with('.') {
+                    if let Some(stripped) = bh.strip_prefix('.') {
                         // Suffix match: ".evil.com" matches "sub.evil.com" and "evil.com"
-                        host.ends_with(bh) || host == &bh[1..]
+                        host.ends_with(bh) || host == stripped
                     } else {
                         host == *bh
                     }
@@ -1296,7 +1391,11 @@ impl GuardianHandler {
             if let Some(aid) = request.params.get("anomaly_id").and_then(|v| v.as_u64()) {
                 let anomalies = self.anomalies.lock().unwrap_or_else(|e| e.into_inner());
                 match anomalies.iter().find(|a| a.id == aid as u32) {
-                    Some(a) => (a.description.clone(), a.severity.as_str().to_string(), Some(aid as u32)),
+                    Some(a) => (
+                        a.description.clone(),
+                        a.severity.as_str().to_string(),
+                        Some(aid as u32),
+                    ),
                     None => {
                         return JsonRpcResponse::error(
                             request.id.clone(),
@@ -1313,7 +1412,12 @@ impl GuardianHandler {
                         "description cannot be empty",
                     );
                 }
-                let sev = request.params.get("severity").and_then(|v| v.as_str()).unwrap_or("info").to_string();
+                let sev = request
+                    .params
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("info")
+                    .to_string();
                 (desc.to_string(), sev, None)
             } else {
                 return JsonRpcResponse::error(
@@ -1340,7 +1444,10 @@ impl GuardianHandler {
         // Rate limiting: max 10 consultations per handler lifetime window
         // (simple counter; in production this would be time-windowed)
         {
-            let mut counter = self.consultation_counter.lock().unwrap_or_else(|e| e.into_inner());
+            let mut counter = self
+                .consultation_counter
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *counter += 1;
             if *counter > 100 {
                 let action = Self::static_rule_action(&severity_str);
@@ -1395,7 +1502,11 @@ impl GuardianHandler {
 
             if content.is_empty() {
                 // LLM returned empty — fallback
-                (Self::static_rule_action(&severity_str), "LLM returned empty response — static rule fallback".to_string(), false)
+                (
+                    Self::static_rule_action(&severity_str),
+                    "LLM returned empty response — static rule fallback".to_string(),
+                    false,
+                )
             } else {
                 let first_line = content.lines().next().unwrap_or("").trim().to_uppercase();
                 let action = if first_line.contains("BLOCK") {
@@ -1409,7 +1520,13 @@ impl GuardianHandler {
                     &Self::static_rule_action(&severity_str)
                 };
                 let reasoning = if content.lines().count() > 1 {
-                    content.lines().skip(1).collect::<Vec<_>>().join(" ").trim().to_string()
+                    content
+                        .lines()
+                        .skip(1)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string()
                 } else {
                     content.to_string()
                 };
@@ -1417,7 +1534,11 @@ impl GuardianHandler {
             }
         } else {
             // Dispatch error — fallback
-            let err_msg = resp.error.as_ref().map(|e| e.message.clone()).unwrap_or_else(|| "unknown error".to_string());
+            let err_msg = resp
+                .error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "unknown error".to_string());
             (
                 Self::static_rule_action(&severity_str),
                 format!("LLM dispatch failed: {} — static rule fallback", err_msg),
@@ -1460,7 +1581,10 @@ impl GuardianHandler {
         severity: Severity,
         description: String,
     ) -> u32 {
-        let mut next_id = self.next_anomaly_id.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next_id = self
+            .next_anomaly_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let id = *next_id;
         *next_id += 1;
         drop(next_id);
@@ -1478,7 +1602,10 @@ impl GuardianHandler {
             ai_consultation: None,
         };
 
-        self.anomalies.lock().unwrap_or_else(|e| e.into_inner()).push(anomaly);
+        {
+            let mut anomalies = self.anomalies.lock().unwrap_or_else(|e| e.into_inner());
+            self.record_anomaly(&mut anomalies, anomaly);
+        }
         id
     }
 }
@@ -1491,6 +1618,7 @@ impl ServiceHandler for GuardianHandler {
             "respond" => self.handle_respond(request),
             "config" => self.handle_config(request),
             "history" => self.handle_history(request),
+            "audit_events" => self.handle_audit_events(request),
             "network_event" => self.handle_network_event(request),
             "consult" => self.handle_consult(request),
             _ => JsonRpcResponse::error(
@@ -1502,7 +1630,16 @@ impl ServiceHandler for GuardianHandler {
     }
 
     fn list_methods(&self) -> Vec<&str> {
-        vec!["state", "anomalies", "respond", "config", "history", "network_event", "consult"]
+        vec![
+            "state",
+            "anomalies",
+            "respond",
+            "config",
+            "history",
+            "audit_events",
+            "network_event",
+            "consult",
+        ]
     }
 }
 
@@ -1513,6 +1650,7 @@ impl ServiceHandler for GuardianHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::INTERNAL_ERROR;
     use serde_json::json;
 
     fn mock_dispatch() -> DispatchFn {
@@ -1605,6 +1743,54 @@ mod tests {
         assert_eq!(
             list[0].get("severity").unwrap().as_str().unwrap(),
             "critical"
+        );
+    }
+
+    #[test]
+    fn ws1m7_anomaly_display_surface_also_emits_immutable_audit_event() {
+        let handler = GuardianHandler::new(mock_dispatch());
+        let id = handler.add_anomaly(
+            AnomalyType::ServiceDown {
+                service: "httpd".into(),
+            },
+            Severity::Critical,
+            "httpd is down".into(),
+        );
+
+        let req = make_request("anomalies", json!({}));
+        let resp = handler.handle(&path(), &req);
+        let result = resp.result.unwrap();
+        let anomalies = result.get("anomalies").unwrap().as_array().unwrap();
+        assert_eq!(anomalies.len(), 1);
+        assert_eq!(anomalies[0].get("id").unwrap().as_u64().unwrap(), id as u64);
+        assert_eq!(
+            anomalies[0].get("description").unwrap().as_str().unwrap(),
+            "httpd is down"
+        );
+
+        let req = make_request("audit_events", json!({}));
+        let resp = handler.handle(&path(), &req);
+        let result = resp.result.unwrap();
+        let events = result.get("audit_events").unwrap().as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("action").unwrap().as_str().unwrap(),
+            "guardian.anomaly.service_down"
+        );
+        assert_eq!(
+            events[0].get("caller").unwrap().as_str().unwrap(),
+            "guardian"
+        );
+        assert_eq!(events[0].get("kind").unwrap().as_str().unwrap(), "result");
+        assert_eq!(
+            events[0]
+                .get("verdict")
+                .unwrap()
+                .get("type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "deny"
         );
     }
 
@@ -1766,10 +1952,7 @@ mod tests {
     #[test]
     fn test_config_set_key() {
         let handler = GuardianHandler::new(mock_dispatch());
-        let req = make_request(
-            "config",
-            json!({"key": "poll_interval_secs", "value": 60}),
-        );
+        let req = make_request("config", json!({"key": "poll_interval_secs", "value": 60}));
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("ok").unwrap().as_bool().unwrap(), true);
@@ -1842,12 +2025,13 @@ mod tests {
     fn test_list_methods() {
         let handler = GuardianHandler::new(mock_dispatch());
         let methods = handler.list_methods();
-        assert_eq!(methods.len(), 7);
+        assert_eq!(methods.len(), 8);
         assert!(methods.contains(&"state"));
         assert!(methods.contains(&"anomalies"));
         assert!(methods.contains(&"respond"));
         assert!(methods.contains(&"config"));
         assert!(methods.contains(&"history"));
+        assert!(methods.contains(&"audit_events"));
         assert!(methods.contains(&"network_event"));
         assert!(methods.contains(&"consult"));
     }
@@ -1890,7 +2074,10 @@ mod tests {
         let result = resp.result.unwrap();
         let list = result.get("anomalies").unwrap().as_array().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].get("severity").unwrap().as_str().unwrap(), "warning");
+        assert_eq!(
+            list[0].get("severity").unwrap().as_str().unwrap(),
+            "warning"
+        );
 
         // Filter by critical severity
         let req = make_request("anomalies", json!({"severity": "critical"}));
@@ -1898,7 +2085,10 @@ mod tests {
         let result = resp.result.unwrap();
         let list = result.get("anomalies").unwrap().as_array().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].get("severity").unwrap().as_str().unwrap(), "critical");
+        assert_eq!(
+            list[0].get("severity").unwrap().as_str().unwrap(),
+            "critical"
+        );
     }
 
     #[test]
@@ -1965,7 +2155,10 @@ mod tests {
         let result = resp.result.unwrap();
         let list = result.get("anomalies").unwrap().as_array().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].get("severity").unwrap().as_str().unwrap(), "warning");
+        assert_eq!(
+            list[0].get("severity").unwrap().as_str().unwrap(),
+            "warning"
+        );
 
         // Filter by critical and resolved
         let req = make_request(
@@ -1976,7 +2169,10 @@ mod tests {
         let result = resp.result.unwrap();
         let list = result.get("anomalies").unwrap().as_array().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].get("severity").unwrap().as_str().unwrap(), "critical");
+        assert_eq!(
+            list[0].get("severity").unwrap().as_str().unwrap(),
+            "critical"
+        );
         assert_eq!(list[0].get("resolved").unwrap().as_bool().unwrap(), true);
     }
 
@@ -2054,7 +2250,7 @@ mod tests {
             Severity::Critical,
             "httpd down".into(),
         );
-        let id2 = handler.add_anomaly(
+        let _id2 = handler.add_anomaly(
             AnomalyType::LogError {
                 count: 10,
                 sample: "error".into(),
@@ -2142,16 +2338,14 @@ mod tests {
     }
 
     fn mock_dispatch_llm_error() -> DispatchFn {
-        Box::new(|service, method, _params| {
-            match (service, method) {
-                ("net", "llm_request") => {
-                    JsonRpcResponse::error(Some(json!(1)), INTERNAL_ERROR, "LLM unavailable")
-                }
-                ("system", "info") => {
-                    JsonRpcResponse::success(Some(json!(1)), json!({"text": "{\"uptime_secs\":100}"}))
-                }
-                _ => JsonRpcResponse::success(Some(json!(1)), json!({"text": "ok"})),
+        Box::new(|service, method, _params| match (service, method) {
+            ("net", "llm_request") => {
+                JsonRpcResponse::error(Some(json!(1)), INTERNAL_ERROR, "LLM unavailable")
             }
+            ("system", "info") => {
+                JsonRpcResponse::success(Some(json!(1)), json!({"text": "{\"uptime_secs\":100}"}))
+            }
+            _ => JsonRpcResponse::success(Some(json!(1)), json!({"text": "ok"})),
         })
     }
 
@@ -2175,13 +2369,19 @@ mod tests {
     fn test_network_event_blocked_host() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
         // Configure blocked hosts
-        let req = make_request("config", json!({"key": "blocked_hosts", "value": ["evil.com", "malware.net"]}));
+        let req = make_request(
+            "config",
+            json!({"key": "blocked_hosts", "value": ["evil.com", "malware.net"]}),
+        );
         handler.handle(&path(), &req);
 
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "evil.com", "port": 443}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "evil.com", "port": 443}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "blocked");
@@ -2194,7 +2394,13 @@ mod tests {
         let list = result.get("anomalies").unwrap().as_array().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(
-            list[0].get("anomaly_type").unwrap().get("type").unwrap().as_str().unwrap(),
+            list[0]
+                .get("anomaly_type")
+                .unwrap()
+                .get("type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "unauthorized_connection"
         );
     }
@@ -2206,10 +2412,13 @@ mod tests {
         let req = make_request("config", json!({"key": "blocked_ports", "value": [22, 23]}));
         handler.handle(&path(), &req);
 
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "safe.example.com", "port": 22}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "safe.example.com", "port": 22}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "blocked");
@@ -2219,10 +2428,13 @@ mod tests {
     #[test]
     fn test_network_event_connection_allowed() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "google.com", "port": 443}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "google.com", "port": 443}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "allowed");
@@ -2233,36 +2445,51 @@ mod tests {
     fn test_network_event_high_traffic() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
         // Default threshold is 10M
-        let req = make_request("network_event", json!({
-            "event_type": "traffic",
-            "details": {"bytes_per_sec": 20_000_000, "source_ip": "10.0.0.5"}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "traffic",
+                "details": {"bytes_per_sec": 20_000_000, "source_ip": "10.0.0.5"}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("action").unwrap().as_str().unwrap(), "anomaly_created");
+        assert_eq!(
+            result.get("action").unwrap().as_str().unwrap(),
+            "anomaly_created"
+        );
     }
 
     // -- Test 5: traffic within threshold is fine
     #[test]
     fn test_network_event_traffic_within_threshold() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "traffic",
-            "details": {"bytes_per_sec": 5_000_000, "source_ip": "10.0.0.5"}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "traffic",
+                "details": {"bytes_per_sec": 5_000_000, "source_ip": "10.0.0.5"}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("action").unwrap().as_str().unwrap(), "within_threshold");
+        assert_eq!(
+            result.get("action").unwrap().as_str().unwrap(),
+            "within_threshold"
+        );
     }
 
     // -- Test 6: network_event with empty event_type
     #[test]
     fn test_network_event_empty_event_type() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "",
-            "details": {}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "",
+                "details": {}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("empty"));
@@ -2281,10 +2508,13 @@ mod tests {
     #[test]
     fn test_network_event_anomaly_empty_description() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "anomaly",
-            "details": {"description": "", "source_ip": "10.0.0.1"}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "anomaly",
+                "details": {"description": "", "source_ip": "10.0.0.1"}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("non-empty"));
@@ -2294,10 +2524,13 @@ mod tests {
     #[test]
     fn test_network_event_unknown_type() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "quantum_flux",
-            "details": {}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "quantum_flux",
+                "details": {}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("quantum_flux"));
@@ -2307,13 +2540,19 @@ mod tests {
     #[test]
     fn test_network_event_monitoring_disabled() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("config", json!({"key": "network_monitoring", "value": false}));
+        let req = make_request(
+            "config",
+            json!({"key": "network_monitoring", "value": false}),
+        );
         handler.handle(&path(), &req);
 
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "evil.com", "port": 80}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "evil.com", "port": 80}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "ignored");
@@ -2351,32 +2590,43 @@ mod tests {
     #[test]
     fn test_consult_inline_description() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("consult", json!({
-            "description": "port scan detected from 192.168.1.100",
-            "severity": "warning"
-        }));
+        let req = make_request(
+            "consult",
+            json!({
+                "description": "port scan detected from 192.168.1.100",
+                "severity": "warning"
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("ai_consulted").unwrap().as_bool().unwrap(), true);
-        assert!(["block", "allow", "monitor"].contains(
-            &result.get("action").unwrap().as_str().unwrap()
-        ));
+        assert!(["block", "allow", "monitor"]
+            .contains(&result.get("action").unwrap().as_str().unwrap()));
     }
 
     // -- Test 13: consult with AI disabled — static fallback
     #[test]
     fn test_consult_ai_disabled() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("config", json!({"key": "ai_consultation_enabled", "value": false}));
+        let req = make_request(
+            "config",
+            json!({"key": "ai_consultation_enabled", "value": false}),
+        );
         handler.handle(&path(), &req);
 
-        let req = make_request("consult", json!({
-            "description": "test anomaly",
-            "severity": "critical"
-        }));
+        let req = make_request(
+            "consult",
+            json!({
+                "description": "test anomaly",
+                "severity": "critical"
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("ai_consulted").unwrap().as_bool().unwrap(), false);
+        assert_eq!(
+            result.get("ai_consulted").unwrap().as_bool().unwrap(),
+            false
+        );
         // Critical severity -> static rule should be "block"
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "block");
     }
@@ -2413,28 +2663,45 @@ mod tests {
     #[test]
     fn test_consult_llm_error_fallback() {
         let handler = GuardianHandler::new(mock_dispatch_llm_error());
-        let req = make_request("consult", json!({
-            "description": "suspicious activity",
-            "severity": "critical"
-        }));
+        let req = make_request(
+            "consult",
+            json!({
+                "description": "suspicious activity",
+                "severity": "critical"
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("ai_consulted").unwrap().as_bool().unwrap(), false);
+        assert_eq!(
+            result.get("ai_consulted").unwrap().as_bool().unwrap(),
+            false
+        );
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "block");
-        assert!(result.get("reasoning").unwrap().as_str().unwrap().contains("failed"));
+        assert!(result
+            .get("reasoning")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("failed"));
     }
 
     // -- Test 18: consult when LLM returns empty content — fallback
     #[test]
     fn test_consult_llm_empty_response() {
         let handler = GuardianHandler::new(mock_dispatch_llm_empty());
-        let req = make_request("consult", json!({
-            "description": "something odd",
-            "severity": "warning"
-        }));
+        let req = make_request(
+            "consult",
+            json!({
+                "description": "something odd",
+                "severity": "warning"
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("ai_consulted").unwrap().as_bool().unwrap(), false);
+        assert_eq!(
+            result.get("ai_consulted").unwrap().as_bool().unwrap(),
+            false
+        );
         // Warning -> static rule = "monitor"
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "monitor");
     }
@@ -2443,10 +2710,13 @@ mod tests {
     #[test]
     fn test_consult_llm_block_action() {
         let handler = GuardianHandler::new(mock_dispatch_llm_block());
-        let req = make_request("consult", json!({
-            "description": "DDoS detected",
-            "severity": "critical"
-        }));
+        let req = make_request(
+            "consult",
+            json!({
+                "description": "DDoS detected",
+                "severity": "critical"
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "block");
@@ -2470,14 +2740,20 @@ mod tests {
         };
         let j = ht.to_json();
         assert_eq!(j.get("type").unwrap().as_str().unwrap(), "high_traffic");
-        assert_eq!(j.get("bytes_per_sec").unwrap().as_u64().unwrap(), 50_000_000);
+        assert_eq!(
+            j.get("bytes_per_sec").unwrap().as_u64().unwrap(),
+            50_000_000
+        );
 
         let uc = AnomalyType::UnauthorizedConnection {
             host: "evil.com".into(),
             port: 8080,
         };
         let j = uc.to_json();
-        assert_eq!(j.get("type").unwrap().as_str().unwrap(), "unauthorized_connection");
+        assert_eq!(
+            j.get("type").unwrap().as_str().unwrap(),
+            "unauthorized_connection"
+        );
         assert_eq!(j.get("port").unwrap().as_u64().unwrap(), 8080);
     }
 
@@ -2490,26 +2766,60 @@ mod tests {
         let req = make_request("config", json!({}));
         let resp = handler.handle(&path(), &req);
         let cfg = resp.result.unwrap().get("config").unwrap().clone();
-        assert_eq!(cfg.get("network_monitoring").unwrap().as_bool().unwrap(), true);
-        assert_eq!(cfg.get("traffic_threshold_bps").unwrap().as_u64().unwrap(), 10_000_000);
-        assert_eq!(cfg.get("ai_consultation_enabled").unwrap().as_bool().unwrap(), true);
-        assert_eq!(cfg.get("llm_model").unwrap().as_str().unwrap(), "qwen2.5:7b-instruct-q4_K_M");
-        assert!(cfg.get("blocked_hosts").unwrap().as_array().unwrap().is_empty());
-        assert!(cfg.get("blocked_ports").unwrap().as_array().unwrap().is_empty());
+        assert_eq!(
+            cfg.get("network_monitoring").unwrap().as_bool().unwrap(),
+            true
+        );
+        assert_eq!(
+            cfg.get("traffic_threshold_bps").unwrap().as_u64().unwrap(),
+            10_000_000
+        );
+        assert_eq!(
+            cfg.get("ai_consultation_enabled")
+                .unwrap()
+                .as_bool()
+                .unwrap(),
+            true
+        );
+        assert_eq!(
+            cfg.get("llm_model").unwrap().as_str().unwrap(),
+            "qwen2.5:7b-instruct-q4_K_M"
+        );
+        assert!(cfg
+            .get("blocked_hosts")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(cfg
+            .get("blocked_ports")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
 
         // Set and verify
-        let req = make_request("config", json!({"key": "traffic_threshold_bps", "value": 5000000}));
+        let req = make_request(
+            "config",
+            json!({"key": "traffic_threshold_bps", "value": 5000000}),
+        );
         handler.handle(&path(), &req);
         let req = make_request("config", json!({"key": "traffic_threshold_bps"}));
         let resp = handler.handle(&path(), &req);
-        assert_eq!(resp.result.unwrap().get("value").unwrap().as_u64().unwrap(), 5_000_000);
+        assert_eq!(
+            resp.result.unwrap().get("value").unwrap().as_u64().unwrap(),
+            5_000_000
+        );
 
         // Set llm_model
         let req = make_request("config", json!({"key": "llm_model", "value": "llama3:8b"}));
         handler.handle(&path(), &req);
         let req = make_request("config", json!({"key": "llm_model"}));
         let resp = handler.handle(&path(), &req);
-        assert_eq!(resp.result.unwrap().get("value").unwrap().as_str().unwrap(), "llama3:8b");
+        assert_eq!(
+            resp.result.unwrap().get("value").unwrap().as_str().unwrap(),
+            "llama3:8b"
+        );
     }
 
     // -- Test 22: config set llm_model to empty string rejected
@@ -2526,32 +2836,44 @@ mod tests {
     #[test]
     fn test_network_event_blocked_host_suffix() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("config", json!({"key": "blocked_hosts", "value": [".evil.com"]}));
+        let req = make_request(
+            "config",
+            json!({"key": "blocked_hosts", "value": [".evil.com"]}),
+        );
         handler.handle(&path(), &req);
 
         // sub.evil.com should match .evil.com suffix
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "sub.evil.com", "port": 80}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "sub.evil.com", "port": 80}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "blocked");
 
         // evil.com itself should also match .evil.com
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "evil.com", "port": 80}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "evil.com", "port": 80}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "blocked");
 
         // notevil.com should NOT match
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"host": "notevil.com", "port": 80}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"host": "notevil.com", "port": 80}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "allowed");
@@ -2561,10 +2883,13 @@ mod tests {
     #[test]
     fn test_network_event_connection_missing_host() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": {"port": 80}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": {"port": 80}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("host"));
@@ -2575,30 +2900,42 @@ mod tests {
     fn test_network_event_traffic_critical_severity() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
         // 60M is > 5 * 10M threshold -> critical
-        let req = make_request("network_event", json!({
-            "event_type": "traffic",
-            "details": {"bytes_per_sec": 60_000_000, "source_ip": "10.0.0.5"}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "traffic",
+                "details": {"bytes_per_sec": 60_000_000, "source_ip": "10.0.0.5"}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("action").unwrap().as_str().unwrap(), "anomaly_created");
+        assert_eq!(
+            result.get("action").unwrap().as_str().unwrap(),
+            "anomaly_created"
+        );
 
         // Verify the severity is critical
         let req = make_request("anomalies", json!({}));
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         let list = result.get("anomalies").unwrap().as_array().unwrap();
-        assert_eq!(list[0].get("severity").unwrap().as_str().unwrap(), "critical");
+        assert_eq!(
+            list[0].get("severity").unwrap().as_str().unwrap(),
+            "critical"
+        );
     }
 
     // -- Test 26: network_event details must be object
     #[test]
     fn test_network_event_details_not_object() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "connection",
-            "details": "not an object"
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "connection",
+                "details": "not an object"
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("object"));
@@ -2609,23 +2946,35 @@ mod tests {
     fn test_static_rule_fallback_severities() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
         // Disable AI to force static fallback
-        let req = make_request("config", json!({"key": "ai_consultation_enabled", "value": false}));
+        let req = make_request(
+            "config",
+            json!({"key": "ai_consultation_enabled", "value": false}),
+        );
         handler.handle(&path(), &req);
 
         // Info -> allow
-        let req = make_request("consult", json!({"description": "test", "severity": "info"}));
+        let req = make_request(
+            "consult",
+            json!({"description": "test", "severity": "info"}),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "allow");
 
         // Warning -> monitor
-        let req = make_request("consult", json!({"description": "test", "severity": "warning"}));
+        let req = make_request(
+            "consult",
+            json!({"description": "test", "severity": "warning"}),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "monitor");
 
         // Critical -> block
-        let req = make_request("consult", json!({"description": "test", "severity": "critical"}));
+        let req = make_request(
+            "consult",
+            json!({"description": "test", "severity": "critical"}),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
         assert_eq!(result.get("action").unwrap().as_str().unwrap(), "block");
@@ -2635,13 +2984,19 @@ mod tests {
     #[test]
     fn test_network_event_anomaly_creates_correct_type() {
         let handler = GuardianHandler::new(mock_dispatch_with_llm());
-        let req = make_request("network_event", json!({
-            "event_type": "anomaly",
-            "details": {"description": "weird packets detected", "source_ip": "10.0.0.99"}
-        }));
+        let req = make_request(
+            "network_event",
+            json!({
+                "event_type": "anomaly",
+                "details": {"description": "weird packets detected", "source_ip": "10.0.0.99"}
+            }),
+        );
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert_eq!(result.get("action").unwrap().as_str().unwrap(), "anomaly_created");
+        assert_eq!(
+            result.get("action").unwrap().as_str().unwrap(),
+            "anomaly_created"
+        );
 
         // Verify anomaly type
         let req = make_request("anomalies", json!({}));
@@ -2670,7 +3025,12 @@ mod tests {
         let req = make_request("respond", json!({"anomaly_id": id, "choice": 1}));
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert!(result.get("action_taken").unwrap().as_str().unwrap().contains("blocked"));
+        assert!(result
+            .get("action_taken")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("blocked"));
 
         // Add HighTraffic and ignore it
         let id2 = handler.add_anomaly(
@@ -2684,7 +3044,12 @@ mod tests {
         let req = make_request("respond", json!({"anomaly_id": id2, "choice": 1}));
         let resp = handler.handle(&path(), &req);
         let result = resp.result.unwrap();
-        assert!(result.get("action_taken").unwrap().as_str().unwrap().contains("high traffic"));
+        assert!(result
+            .get("action_taken")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("high traffic"));
     }
 
     // -------------------------------------------------------------------
@@ -2723,7 +3088,8 @@ mod tests {
         assert!(a.resolution.is_none());
         assert!(a.user_response.is_none());
 
-        a.resolve("fixed-it".to_string(), fresh_user_response()).unwrap();
+        a.resolve("fixed-it".to_string(), fresh_user_response())
+            .unwrap();
 
         assert!(a.resolved);
         assert_eq!(a.resolution.as_deref(), Some("fixed-it"));
@@ -2733,7 +3099,8 @@ mod tests {
     #[test]
     fn ws9m5_resolve_is_one_shot_second_call_errors() {
         let mut a = fresh_anomaly();
-        a.resolve("first".to_string(), fresh_user_response()).unwrap();
+        a.resolve("first".to_string(), fresh_user_response())
+            .unwrap();
 
         let second = a.resolve("second".to_string(), fresh_user_response());
         assert!(second.is_err(), "double resolve must be rejected");
@@ -2786,7 +3153,11 @@ mod tests {
         let handler = GuardianHandler::new(mock_dispatch());
         let req = make_request("config", json!({"key": "enabled", "value": true}));
         let resp = handler.handle(&path(), &req);
-        assert!(resp.error.is_none(), "setting enabled=true must succeed; got {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "setting enabled=true must succeed; got {:?}",
+            resp.error
+        );
         assert_eq!(read_config_field(&handler, "enabled"), json!(true));
     }
 
@@ -2795,14 +3166,20 @@ mod tests {
         // WS9.M6 only blocks the master `enabled` toggle. Sub-toggles like
         // `network_monitoring` remain runtime-mutable for legitimate dev/diag.
         let handler = GuardianHandler::new(mock_dispatch());
-        let req = make_request("config", json!({"key": "network_monitoring", "value": false}));
+        let req = make_request(
+            "config",
+            json!({"key": "network_monitoring", "value": false}),
+        );
         let resp = handler.handle(&path(), &req);
         assert!(
             resp.error.is_none(),
             "network_monitoring toggle must remain mutable; got {:?}",
             resp.error
         );
-        assert_eq!(read_config_field(&handler, "network_monitoring"), json!(false));
+        assert_eq!(
+            read_config_field(&handler, "network_monitoring"),
+            json!(false)
+        );
     }
 
     #[test]
@@ -2815,7 +3192,8 @@ mod tests {
         assert!(a.resolution.is_none());
 
         // And resolution after AI consultation works normally.
-        a.resolve("done".to_string(), fresh_user_response()).unwrap();
+        a.resolve("done".to_string(), fresh_user_response())
+            .unwrap();
         assert!(a.resolved);
         // AI advice survives the resolution.
         assert_eq!(a.ai_consultation.as_deref(), Some("model says restart it"));
