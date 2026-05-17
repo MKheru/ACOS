@@ -32,6 +32,7 @@ members = [
     ".",
     "acos-authority-types",
     "acos-system-capabilities",
+    "acos-web-gui",
     "guardian-authority",
     "llm-runtime-api",
     "mcp-bridge",
