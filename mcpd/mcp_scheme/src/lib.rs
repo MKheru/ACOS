@@ -24,6 +24,7 @@ pub mod protocol;
 pub mod router;
 pub mod handler;
 pub mod sanitizer;
+pub mod ui_action;
 
 mod system_handlers;
 mod file_handlers;
