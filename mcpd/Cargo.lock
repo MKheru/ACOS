@@ -11,6 +11,10 @@ name = "acos-system-capabilities"
 version = "0.1.0"
 
 [[package]]
+name = "acos-web-gui"
+version = "0.1.0"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

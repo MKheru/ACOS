@@ -1,0 +1,7 @@
+[package]
+name = "acos-web-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Remote-first ACOS web GUI skeleton"
+
+[dependencies]
