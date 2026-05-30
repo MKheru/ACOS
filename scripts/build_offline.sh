@@ -147,6 +147,11 @@ _inject_mcpd() {
 
     cp "$MCPD_BIN" "$MOUNT_DIR/usr/bin/mcpd"
 
+    # Patch the compiled login binary to replace "redox login:" with "acos  login:"
+    if [ -f "$MOUNT_DIR/usr/bin/login" ]; then
+        sed -i 's/redox login:/acos  login:/g' "$MOUNT_DIR/usr/bin/login"
+    fi
+
     # MCP daemon init entry (legacy placeholder for compatibility tests)
     printf '# Legacy compatibility file for mcpd\nrequires_weak 00_base\n' > "$MOUNT_DIR/usr/lib/init.d/15_mcp"
 

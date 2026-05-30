@@ -129,6 +129,12 @@ for name in "${!BINARIES[@]}"; do
     INJECTED=$((INJECTED + 1))
 done
 
+# Patch the compiled login binary to replace "redox login:" with "acos  login:"
+if [ -f "$MOUNT_POINT/usr/bin/login" ]; then
+    sed -i 's/redox login:/acos  login:/g' "$MOUNT_POINT/usr/bin/login"
+    echo "  Patched /usr/bin/login binary prompt"
+fi
+
 # Fix branding — both /etc/issue (pre-login banner) and /etc/motd (post-login)
 printf '########## ACOS ##########\n# Agent-Centric OS        #\n# Login: user or root     #\n# root password: password  #\n############################\n' > "$MOUNT_POINT/etc/issue"
 echo "  Fixed /etc/issue branding"
