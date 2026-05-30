@@ -311,3 +311,376 @@ body {
     box-shadow: 0 0 0 0 rgba(0, 255, 102, 0);
   }
 }
+
+/* ==========================================================================
+   ACOS HORIZON DESKTOP STYLES
+   ========================================================================== */
+
+/* Horizon Main Desktop Area */
+.horizon-desktop {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  display: flex;
+}
+
+/* Desktop Grid Icons */
+.desktop-grid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  grid-template-rows: repeat(auto-fill, 90px);
+  grid-auto-flow: column;
+  gap: 16px;
+  padding: 16px;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.desktop-icon {
+  width: 80px;
+  height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-color);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.desktop-icon:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--glass-border);
+  transform: scale(1.05);
+}
+
+.desktop-icon-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-align: center;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+  max-width: 76px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Floating Window Manager */
+.floating-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--border-radius);
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  transition: border-color 0.2s;
+  pointer-events: auto;
+  min-width: 320px;
+  min-height: 240px;
+}
+
+.floating-window.focused {
+  border-color: var(--fg-color);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.window-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--glass-border);
+  cursor: move;
+  user-select: none;
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.window-title-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.window-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.win-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+}
+
+.win-btn:hover {
+  font-size: 8px;
+  color: rgba(0,0,0,0.6);
+  font-weight: bold;
+}
+
+.win-btn.close {
+  background: #ff5f56;
+}
+
+.win-btn.minimize {
+  background: #ffbd2e;
+}
+
+.win-btn.maximize {
+  background: #27c93f;
+}
+
+.window-body {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Applications Inner Elements */
+
+/* File Explorer */
+.files-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(0,0,0,0.1);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.path-breadcrumbs {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 16px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.file-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: var(--transition-smooth);
+}
+
+.file-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--glass-border);
+}
+
+.file-item.selected {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--fg-color);
+}
+
+.file-label {
+  font-size: 0.75rem;
+  text-align: center;
+  word-break: break-all;
+  max-height: 32px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* System Monitor */
+.monitor-app {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+}
+
+.monitor-widgets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.monitor-widget {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.15);
+  border: 1px solid var(--glass-border);
+}
+
+.processes-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.process-table-container {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.process-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-family: var(--font-sans);
+}
+
+.process-table th, .process-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.process-table th {
+  background: rgba(0, 0, 0, 0.4);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.process-table tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.process-table tr.selected {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* System Orb & Start Menu */
+.start-orb {
+  background: linear-gradient(135deg, var(--fg-color) 0%, var(--primary-color) 100%);
+  animation: orb-glowing 3s infinite alternate;
+  box-shadow: 0 0 15px rgba(255, 0, 85, 0.3);
+  border: none;
+}
+
+.start-orb:hover {
+  transform: scale(1.1) rotate(45deg);
+}
+
+.start-menu {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 400px;
+  height: 480px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+}
+
+.start-menu-header {
+  padding: 20px;
+  border-bottom: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.02);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.start-search {
+  width: 100%;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  color: var(--fg-color);
+  outline: none;
+  font-size: 0.85rem;
+}
+
+.start-apps-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.start-app-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  color: var(--fg-color);
+}
+
+.start-app-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  transform: translateX(4px);
+}
+
+.start-menu-footer {
+  padding: 16px 20px;
+  border-top: 1px solid var(--glass-border);
+  background: rgba(0,0,0,0.15);
+  font-size: 0.8rem;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* Glowing Animations */
+@keyframes orb-glowing {
+  0% {
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 22px rgba(0, 240, 255, 0.7), 0 0 8px rgba(255, 251, 0, 0.5);
+  }
+}
