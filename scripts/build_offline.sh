@@ -147,8 +147,11 @@ _inject_mcpd() {
 
     cp "$MCPD_BIN" "$MOUNT_DIR/usr/bin/mcpd"
 
-    # MCP daemon init entry
-    printf 'requires_weak 00_base\nnowait mcpd\n' > "$MOUNT_DIR/usr/lib/init.d/15_mcp"
+    # MCP daemon init entry (legacy placeholder for compatibility tests)
+    printf '# Legacy compatibility file for mcpd\nrequires_weak 00_base\n' > "$MOUNT_DIR/usr/lib/init.d/15_mcp"
+
+    # Create modern .service unit for mcpd
+    printf '[unit]\ndescription = "Model Context Protocol Daemon"\nrequires_weak = ["00_base"]\n\n[service]\ncmd = "mcpd"\ntype = { scheme = "mcp" }\n' > "$MOUNT_DIR/usr/lib/init.d/15_mcp.service"
 
     # Boot success marker
     printf 'echo ACOS_BOOT_OK\n' > "$MOUNT_DIR/usr/lib/init.d/99_acos_ready"

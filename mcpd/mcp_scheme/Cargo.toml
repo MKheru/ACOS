@@ -27,5 +27,5 @@ mcpd-authority-shim = { path = "../mcpd-authority-shim" }
 mcpd-observability = { path = "../mcpd-observability" }
 redox-scheme = { version = "0.11", optional = true }
 libredox = { version = "0.1", optional = true }
-syscall = { version = "0.7", optional = true, package = "redox_syscall" }
+syscall = { version = "0.8", optional = true, package = "redox_syscall" }
 

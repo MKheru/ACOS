@@ -319,7 +319,7 @@ impl McpScheme {
         let message = format!(
             "cap.warn phase={phase} caller={caller_label} target={target} verdict={verdict:?}"
         );
-        println!("{message}");
+        // println!("{message}");
         self.cap_warn_log.write_entry("warn", message, "cap.warn");
     }
 

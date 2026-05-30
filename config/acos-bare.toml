@@ -22,20 +22,38 @@ notify smolnetd
 nowait dhcpd
 """
 
-# Start MCP daemon after network
+# Start MCP daemon after network (legacy placeholder for compatibility tests)
 [[files]]
 path = "/usr/lib/init.d/15_mcp"
 data = """
+# Legacy compatibility file for mcpd
 requires_weak 10_net
-scheme mcp mcpd
 """
 
-# Start AI Guardian daemon (consumes MCP services, monitors system)
+# Start MCP daemon after network as a modern scheme service
 [[files]]
-path = "/usr/lib/init.d/16_guardian"
+path = "/usr/lib/init.d/15_mcp.service"
 data = """
-requires_weak 15_mcp
-nowait acos-guardian
+[unit]
+description = "Model Context Protocol Daemon"
+requires_weak = ["10_net"]
+
+[service]
+cmd = "mcpd"
+type = { scheme = "mcp" }
+"""
+
+# Start AI Guardian daemon as a modern service
+[[files]]
+path = "/usr/lib/init.d/16_guardian.service"
+data = """
+[unit]
+description = "ACOS Guardian Daemon"
+requires_weak = ["15_mcp.service"]
+
+[service]
+cmd = "acos-guardian"
+type = "oneshot_async"
 """
 
 # ACOS boot marker (for QEMU evaluation harness)

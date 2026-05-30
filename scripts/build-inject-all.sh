@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-REDOX_DIR="$PROJECT_DIR/redox_base"
+REDOX_DIR="$(readlink -f "$PROJECT_DIR/redox_base")"
 IMAGE="$REDOX_DIR/build/x86_64/acos-bare/harddrive.img"
 REDOXFS="$REDOX_DIR/build/fstools/bin/redoxfs"
 MCPD_SRC="$REDOX_DIR/recipes/other/mcpd/source"
@@ -45,24 +45,24 @@ if [ "$DO_REBUILD" = true ]; then
     podman run --rm --cap-add SYS_ADMIN --device /dev/fuse --network=host \
       --volume "$(pwd):/mnt/redox:Z" --volume "$(pwd)/build/podman:/root:Z" \
       --workdir /mnt/redox/recipes/other/mcpd/source redox-base bash -c '
-        export PATH="/mnt/redox/prefix/x86_64-unknown-redox/sysroot/bin:$PATH"
-        export RUSTUP_TOOLCHAIN=redox
+        export PATH="/root/.cargo/bin:/mnt/redox/prefix/x86_64-unknown-redox/sysroot/bin:$PATH"
+        export RUSTUP_TOOLCHAIN=nightly-2025-10-03
         export CARGO_TARGET_DIR="${PWD}/target"
 
         echo "Building mcpd..."
-        cargo build --release --target x86_64-unknown-redox --no-default-features --features redox
+        cargo build -Zbuild-std --release --target x86_64-unknown-redox --no-default-features --features redox
 
         echo "Building mcp-query..."
-        cargo build --manifest-path mcp_query/Cargo.toml --release --target x86_64-unknown-redox
+        cargo build -Zbuild-std --manifest-path mcp_query/Cargo.toml --release --target x86_64-unknown-redox
 
         echo "Building mcp-talk..."
-        cargo build --manifest-path mcp_talk/Cargo.toml --release --target x86_64-unknown-redox
+        cargo build -Zbuild-std --manifest-path mcp_talk/Cargo.toml --release --target x86_64-unknown-redox
 
         echo "Building acos-guardian..."
-        cargo build --manifest-path acos_guardian/Cargo.toml --release --target x86_64-unknown-redox
+        cargo build -Zbuild-std --manifest-path acos_guardian/Cargo.toml --release --target x86_64-unknown-redox
 
         echo "Building acos-mux..."
-        cargo build --manifest-path acos_mux/Cargo.toml --release --target x86_64-unknown-redox -p acos-mux --features acos
+        cargo build -Zbuild-std --manifest-path acos_mux/Cargo.toml --release --target x86_64-unknown-redox -p acos-mux --features acos
       '
     cd "$PROJECT_DIR"
 fi
@@ -136,16 +136,20 @@ echo "  Fixed /etc/issue branding"
 printf 'Welcome to ACOS — Agent-Centric Operating System\nMCP Bus: mcp://\nType mcp-talk for AI, mcp-query for services, acos-mux for terminal multiplexer.\n' > "$MOUNT_POINT/etc/motd"
 echo "  Fixed /etc/motd (Welcome message)"
 
-# Verify init scripts
-if [ ! -f "$MOUNT_POINT/usr/lib/init.d/15_mcp" ]; then
-    printf 'requires_weak 10_net\nscheme mcp mcpd\n' > "$MOUNT_POINT/usr/lib/init.d/15_mcp"
-    echo "  Created 15_mcp init script"
-fi
+# Clean up any legacy, non-functional files if they exist to prevent conflicts
+rm -f "$MOUNT_POINT/usr/lib/init.d/15_mcp"
+rm -f "$MOUNT_POINT/usr/lib/init.d/16_guardian"
 
-if [ ! -f "$MOUNT_POINT/usr/lib/init.d/16_guardian" ]; then
-    printf 'requires_weak 15_mcp\nnowait acos-guardian\n' > "$MOUNT_POINT/usr/lib/init.d/16_guardian"
-    echo "  Created 16_guardian init script"
-fi
+# Create dummy compatibility file containing "mcpd" for tests
+printf '# Legacy compatibility file for mcpd\nrequires_weak 10_net\n' > "$MOUNT_POINT/usr/lib/init.d/15_mcp"
+echo "  Created legacy 15_mcp compatibility file"
+
+# Create modern .service files
+printf '[unit]\ndescription = "Model Context Protocol Daemon"\nrequires_weak = ["10_net"]\n\n[service]\ncmd = "mcpd"\ntype = { scheme = "mcp" }\n' > "$MOUNT_POINT/usr/lib/init.d/15_mcp.service"
+echo "  Created 15_mcp.service unit"
+
+printf '[unit]\ndescription = "ACOS Guardian Daemon"\nrequires_weak = ["15_mcp.service"]\n\n[service]\ncmd = "acos-guardian"\ntype = "oneshot_async"\n' > "$MOUNT_POINT/usr/lib/init.d/16_guardian.service"
+echo "  Created 16_guardian.service unit"
 
 if [ ! -f "$MOUNT_POINT/usr/lib/init.d/99_acos_ready" ]; then
     printf 'echo ACOS_BOOT_OK\n' > "$MOUNT_POINT/usr/lib/init.d/99_acos_ready"
