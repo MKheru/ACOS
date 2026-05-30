@@ -40,6 +40,7 @@ pub mod konsole_renderer;
 pub mod talk_handler;
 pub mod guardian_handler;
 pub mod command_handler;
+pub mod ui_handler;
 
 use system_handlers::{SystemInfoHandler, ProcessHandler, MemoryHandler};
 use file_handlers::{FileReadHandler, FileWriteHandler, FileSearchHandler};
@@ -52,6 +53,7 @@ use konsole_handler::KonsoleHandler;
 use display_handler::DisplayHandler;
 use talk_handler::TalkHandler;
 use guardian_handler::GuardianHandler;
+use ui_handler::UiHandler;
 
 #[cfg(target_os = "redox")]
 pub mod scheme_bridge;
@@ -272,6 +274,9 @@ impl McpScheme {
                 hub_mcp.dispatch(service, method, params)
             });
         router.register("mcp", handler::McpHandler::new_with_dispatch(dispatch_mcp));
+
+        // WS10 Rich Interface foundations UI scheme registration
+        router.register("ui", UiHandler::new());
 
         // Wrap router in Arc, then bind hub (router + policy). No `unsafe`.
         let router = std::sync::Arc::new(router);
