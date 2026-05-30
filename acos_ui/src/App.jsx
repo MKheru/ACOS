@@ -82,6 +82,7 @@ function App() {
   const wsCmdRef = useRef(null);
   const wsUiRef = useRef(null);
   const wsSysRef = useRef(null);
+  const desktopRef = useRef(null);
 
   // Update clock every second
   useEffect(() => {
@@ -444,9 +445,15 @@ function App() {
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         setSelectedSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
-      } else if (e.key === 'Tab' || e.key === 'Enter') {
+      } else if (e.key === 'Tab') {
         e.preventDefault();
         acceptSuggestion(suggestions[selectedSuggestionIndex].cmd);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const completedCmd = suggestions[selectedSuggestionIndex].cmd;
+        setTerminalInput(completedCmd);
+        setSuggestions([]);
+        executeCommand(completedCmd);
       } else if (e.key === 'Escape') {
         setSuggestions([]);
       }
@@ -798,7 +805,7 @@ function App() {
       </header>
 
       {/* Main Desktop Workspace */}
-      <div className="horizon-desktop">
+      <div className="horizon-desktop" ref={desktopRef}>
         
         {/* Desktop Application Icons Grid */}
         <div className="desktop-grid">
@@ -846,6 +853,7 @@ function App() {
                   transition: { duration: 0.25 }
                 }}
                 drag={!win.isMaximized}
+                dragConstraints={desktopRef}
                 dragHandleClassName="window-titlebar"
                 dragMomentum={false}
                 dragElastic={0}
