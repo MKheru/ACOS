@@ -684,3 +684,97 @@ body {
     box-shadow: 0 0 22px rgba(0, 240, 255, 0.7), 0 0 8px rgba(255, 251, 0, 0.5);
   }
 }
+
+/* Floating Window Maximization & Resizing */
+.floating-window.maximized {
+  width: 100vw !important;
+  height: calc(100vh - 84px) !important; /* Subtract dock and top bar */
+  left: 0 !important;
+  top: 60px !important;
+  border-radius: 0px !important;
+  box-shadow: none !important;
+}
+
+.floating-window:not(.maximized) {
+  resize: both;
+  overflow: hidden;
+}
+
+/* Terminal Autocomplete Dropdown & Tooltips */
+.terminal-input-container {
+  position: relative;
+  width: 100%;
+}
+
+.autocomplete-popover {
+  position: absolute;
+  bottom: 35px;
+  left: 0;
+  display: flex;
+  width: 580px;
+  max-height: 200px;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+  z-index: 100000;
+  overflow: hidden;
+}
+
+.suggestions-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(0,0,0,0.85);
+  border-right: 1px solid var(--glass-border);
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--fg-color);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.suggestion-item:hover, .suggestion-item.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--secondary-color);
+}
+
+.suggestion-tooltip {
+  flex: 1.2;
+  padding: 12px;
+  background: rgba(10, 10, 15, 0.92);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.78rem;
+  overflow-y: auto;
+}
+
+.suggestion-tooltip h5 {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--primary-color);
+  font-size: 0.85rem;
+}
+
+.suggestion-tooltip p {
+  opacity: 0.8;
+  line-height: 1.3;
+}
+
+.usage-code {
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.4);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  color: var(--secondary-color);
+  font-size: 0.72rem;
+  margin-top: 4px;
+}

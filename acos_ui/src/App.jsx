@@ -7,6 +7,18 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
+// ACOS Interactive Shell Commands Database with descriptions and usages
+const ACOS_COMMANDS = [
+  { cmd: 'ls', desc: 'Lists files and directories in the current folder', usage: 'ls -la /etc' },
+  { cmd: 'ps', desc: 'Displays currently running system processes with PID, time, and private memory', usage: 'ps' },
+  { cmd: 'cat', desc: 'Reads and displays the content of a text file on the screen', usage: 'cat /etc/hostname' },
+  { cmd: 'kill', desc: 'Terminates an active system process by its unique PID number', usage: 'kill -9 <PID>' },
+  { cmd: 'mcp-query system info', desc: 'Interrogates ACOS hardware statistics, uptime, and load via MCP JSON-RPC', usage: 'mcp-query system info' },
+  { cmd: 'mcp-query process list', desc: 'Lists all Redox processes in raw MCP JSON format', usage: 'mcp-query process list' },
+  { cmd: 'mcp-query ui dom get', desc: 'Reads the active visual semantic Virtual DOM tree representation', usage: 'mcp-query ui dom get' },
+  { cmd: 'ui theme set', desc: 'Switches the visual Horizon style theme (matrix, cyberpunk, Dracula, brutalism)', usage: "ui theme set 'cyberpunk'" }
+];
+
 function App() {
   // Horizon Desktop State
   const [activeTheme, setActiveTheme] = useState('cyberpunk');
@@ -16,10 +28,10 @@ function App() {
   
   // Windows configurations
   const [windows, setWindows] = useState([
-    { id: 'terminal', title: 'ACOS Terminal', icon: Terminal, isOpen: true, isMinimized: false, zIndex: 100, x: 80, y: 60, w: 640, h: 420 },
-    { id: 'files', title: 'File Explorer', icon: FolderOpen, isOpen: false, isMinimized: false, zIndex: 10, x: 180, y: 120, w: 580, h: 390 },
-    { id: 'monitor', title: 'System Monitor', icon: Cpu, isOpen: false, isMinimized: false, zIndex: 10, x: 260, y: 160, w: 540, h: 380 },
-    { id: 'guardian', title: 'AI Guardian', icon: Shield, isOpen: true, isMinimized: false, zIndex: 50, x: 740, y: 60, w: 420, h: 480 }
+    { id: 'terminal', title: 'ACOS Terminal', icon: Terminal, isOpen: true, isMinimized: false, isMaximized: false, zIndex: 100, x: 80, y: 60, w: 640, h: 420 },
+    { id: 'files', title: 'File Explorer', icon: FolderOpen, isOpen: false, isMinimized: false, isMaximized: false, zIndex: 10, x: 180, y: 120, w: 580, h: 390 },
+    { id: 'monitor', title: 'System Monitor', icon: Cpu, isOpen: false, isMinimized: false, isMaximized: false, zIndex: 10, x: 260, y: 160, w: 540, h: 380 },
+    { id: 'guardian', title: 'AI Guardian', icon: Shield, isOpen: true, isMinimized: false, isMaximized: false, zIndex: 50, x: 740, y: 60, w: 420, h: 480 }
   ]);
 
   // Terminal state
@@ -28,8 +40,13 @@ function App() {
     'Welcome to ACOS Horizon — Rich Semantic Desktop Environment v1.0.0',
     'MCP Systems active. WebSocket bridge online at ws://localhost:8000',
     'Double-click desktop icons or use the Orb to launch visual system tools',
+    'Type standard shell commands in the terminal (autocomplete popup is active!)',
     ''
   ]);
+
+  // Terminal Autocomplete Suggestion State
+  const [suggestions, setSuggestions] = useState([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
 
   // File Explorer state
   const [currentPath, setCurrentPath] = useState('/');
@@ -126,6 +143,17 @@ function App() {
       }
       return w;
     }));
+  };
+
+  const toggleMaximizeWindow = (id, e) => {
+    e?.stopPropagation();
+    setWindows(prev => prev.map(w => {
+      if (w.id === id) {
+        return { ...w, isMaximized: !w.isMaximized };
+      }
+      return w;
+    }));
+    focusWindow(id);
   };
 
   // Connect to ACOS mcpd system WebSockets
@@ -393,11 +421,51 @@ function App() {
     fetchFiles(newPath);
   };
 
+  // Terminal Autocomplete Logic
+  const handleTerminalInputChange = (val) => {
+    setTerminalInput(val);
+    if (!val.trim()) {
+      setSuggestions([]);
+      return;
+    }
+
+    // Filter matching commands
+    const query = val.toLowerCase();
+    const matches = ACOS_COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(query));
+    setSuggestions(matches);
+    setSelectedSuggestionIndex(0);
+  };
+
+  const handleTerminalInputKeyDown = (e) => {
+    if (suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev => (prev + 1) % suggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+      } else if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        acceptSuggestion(suggestions[selectedSuggestionIndex].cmd);
+      } else if (e.key === 'Escape') {
+        setSuggestions([]);
+      }
+    } else if (e.key === 'Enter') {
+      executeCommand(terminalInput);
+    }
+  };
+
+  const acceptSuggestion = (cmd) => {
+    setTerminalInput(cmd);
+    setSuggestions([]);
+  };
+
   // Handle command execution
   const executeCommand = (cmdText) => {
     if (!cmdText.trim()) return;
     
     setTerminalLines(prev => [...prev, `root:~# ${cmdText}`]);
+    setSuggestions([]);
     
     // Check if it's a theme switch shortcut
     if (cmdText.startsWith('ui theme set ')) {
@@ -463,30 +531,57 @@ function App() {
     switch (id) {
       case 'terminal':
         return (
-          <div className="terminal-window" style={{ height: '100%' }}>
-            {terminalLines.map((line, idx) => (
-              <div key={idx} className="terminal-line">
-                {line.startsWith('root:~#') ? (
-                  <span>
-                    <span className="terminal-prompt">root:~#</span> {line.replace('root:~#', '')}
-                  </span>
-                ) : line}
-              </div>
-            ))}
-            <div ref={terminalEndRef} />
+          <div className="terminal-window" style={{ height: '100%', position: 'relative' }}>
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {terminalLines.map((line, idx) => (
+                <div key={idx} className="terminal-line">
+                  {line.startsWith('root:~#') ? (
+                    <span>
+                      <span className="terminal-prompt">root:~#</span> {line.replace('root:~#', '')}
+                    </span>
+                  ) : line}
+                </div>
+              ))}
+              <div ref={terminalEndRef} />
+            </div>
             
-            <div className="terminal-input-line">
+            <div className="terminal-input-line" style={{ position: 'relative' }}>
               <span className="terminal-prompt">root:~#</span>
-              <input
-                type="text"
-                className="terminal-input"
-                value={terminalInput}
-                onChange={(e) => setTerminalInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && executeCommand(terminalInput)}
-                autoFocus={focusedWindowId === 'terminal'}
-                placeholder="Type shell command..."
-              />
-              <button onClick={() => executeCommand(terminalInput)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--secondary-color)' }}>
+              <div className="terminal-input-container">
+                <input
+                  type="text"
+                  className="terminal-input"
+                  value={terminalInput}
+                  onChange={(e) => handleTerminalInputChange(e.target.value)}
+                  onKeyDown={handleTerminalInputKeyDown}
+                  autoFocus={focusedWindowId === 'terminal'}
+                  placeholder="Type command (autocomplete active, Tab to select)..."
+                />
+                
+                {/* Autocomplete dropdown overlay */}
+                {suggestions.length > 0 && (
+                  <div className="autocomplete-popover glass glow-accent">
+                    <div className="suggestions-list">
+                      {suggestions.map((s, idx) => (
+                        <div 
+                          key={idx}
+                          onClick={() => acceptSuggestion(s.cmd)}
+                          onMouseEnter={() => setSelectedSuggestionIndex(idx)}
+                          className={`suggestion-item ${idx === selectedSuggestionIndex ? 'active' : ''}`}
+                        >
+                          {s.cmd}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="suggestion-tooltip glass">
+                      <h5>{suggestions[selectedSuggestionIndex].cmd}</h5>
+                      <p>{suggestions[selectedSuggestionIndex].desc}</p>
+                      <div className="usage-code">Ex: {suggestions[selectedSuggestionIndex].usage}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button onClick={() => executeCommand(terminalInput)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--secondary-color)', paddingLeft: '8px' }}>
                 <Send size={16} />
               </button>
             </div>
@@ -750,7 +845,7 @@ function App() {
                   y: win.isMinimized ? 500 : 0,
                   transition: { duration: 0.25 }
                 }}
-                drag
+                drag={!win.isMaximized}
                 dragHandleClassName="window-titlebar"
                 dragMomentum={false}
                 dragElastic={0}
@@ -758,13 +853,13 @@ function App() {
                 onClick={() => focusWindow(win.id)}
                 style={{ 
                   zIndex: win.zIndex, 
-                  left: win.x, 
-                  top: win.y, 
-                  width: win.w, 
-                  height: win.h,
+                  left: win.isMaximized ? 0 : win.x, 
+                  top: win.isMaximized ? 60 : win.y, 
+                  width: win.isMaximized ? '100vw' : win.w, 
+                  height: win.isMaximized ? 'calc(100vh - 124px)' : win.h,
                   display: win.isMinimized ? 'none' : 'flex'
                 }}
-                className={`floating-window glass ${focusedWindowId === win.id ? 'focused glow-accent' : ''}`}
+                className={`floating-window glass ${focusedWindowId === win.id ? 'focused glow-accent' : ''} ${win.isMaximized ? 'maximized' : ''}`}
               >
                 {/* Title Bar */}
                 <div className="window-titlebar" onMouseDown={() => focusWindow(win.id)}>
@@ -774,6 +869,7 @@ function App() {
                   </div>
                   <div className="window-controls">
                     <button className="win-btn minimize" onClick={(e) => minimizeWindow(win.id, e)} title="Minimize">_</button>
+                    <button className="win-btn maximize" onClick={(e) => toggleMaximizeWindow(win.id, e)} title={win.isMaximized ? "Restore" : "Maximize"}>⬜</button>
                     <button className="win-btn close" onClick={(e) => closeWindow(win.id, e)} title="Close">X</button>
                   </div>
                 </div>
