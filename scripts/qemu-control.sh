@@ -19,13 +19,13 @@ SERIAL_SOCK="/tmp/acos-serial.sock"
 PID_FILE="/tmp/acos-qemu.pid"
 
 send_qmp() {
-    echo "$1" | socat - UNIX-CONNECT:$QMP_SOCK 2>/dev/null
+    (echo '{"execute":"qmp_capabilities"}'; echo "$1") | socat - UNIX-CONNECT:$QMP_SOCK 2>/dev/null
 }
 
 send_qmp_cmd() {
     # Send QMP command and get response
     local cmd="$1"
-    echo "$cmd" | socat -t1 - UNIX-CONNECT:$QMP_SOCK 2>/dev/null | tail -1
+    (echo '{"execute":"qmp_capabilities"}'; echo "$cmd") | socat -t1 - UNIX-CONNECT:$QMP_SOCK 2>/dev/null | tail -1
 }
 
 send_key() {
@@ -112,7 +112,7 @@ case "$1" in
         echo "Waiting for boot..."
         for i in $(seq 1 30); do
             sleep 2
-            if grep -q "acos login:" "$SERIAL_LOG" 2>/dev/null; then
+            if grep -E -q "acos[[:space:]]+login:" "$SERIAL_LOG" 2>/dev/null; then
                 echo "Boot complete (${i}x2s)"
                 break
             fi
@@ -134,12 +134,12 @@ case "$1" in
 
     read)
         # Read last N lines of serial output (default 20)
-        local lines="${2:-20}"
+        lines="${2:-20}"
         strings "$SERIAL_LOG" | tail -${lines}
         ;;
 
     screenshot)
-        local outfile="${2:-/tmp/acos-screenshot.ppm}"
+        outfile="${2:-/tmp/acos-screenshot.ppm}"
         send_qmp_cmd '{"execute":"screendump","arguments":{"filename":"'"$outfile"'"}}' > /dev/null
         echo "Screenshot saved to $outfile"
         ;;
@@ -157,8 +157,8 @@ case "$1" in
 
     run)
         # Send a command and wait for output
-        local cmd="$2"
-        local marker="__DONE_$(date +%s)__"
+        cmd="$2"
+        marker="__DONE_$(date +%s)__"
 
         # Type the command
         send_string "$cmd"
