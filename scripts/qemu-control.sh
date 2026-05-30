@@ -96,7 +96,7 @@ case "$1" in
             -serial file:$SERIAL_LOG \
             -drive file=$IMAGE,format=raw,if=none,id=drv0 \
             -device nvme,drive=drv0,serial=ACOS \
-            -net none -no-reboot \
+            -net nic,model=e1000 -net user,hostfwd=tcp::8000-:8000 -no-reboot \
             -daemonize \
             -pidfile $PID_FILE
 

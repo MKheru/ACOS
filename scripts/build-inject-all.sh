@@ -162,6 +162,11 @@ if [ ! -f "$MOUNT_POINT/usr/lib/init.d/99_acos_ready" ]; then
     echo "  Created 99_acos_ready init script"
 fi
 
+# Create acos-desktop launcher command inside ACOS
+printf '#!/bin/sh\n\necho "============================================================"\necho "          ACOS SEMANTIC UI CANVAS ACTIVATION              "\necho "============================================================"\necho ""\necho "   [OK] WebSocket Gateway is running on ACOS port 8000."\necho ""\necho "   To launch the high-performance desktop interface :"\necho "   Open your Host OS Web Browser and navigate to :"\necho ""\necho "         http://localhost:5173"\necho ""\necho "   It features your React-based Bento Grid workspace:"\necho "     - Left Panel: Your ACOS Terminal session"\necho "     - Right Panel: AI Guardian Security Audit"\necho ""\necho "============================================================"\n' > "$MOUNT_POINT/usr/bin/acos-desktop"
+chmod +x "$MOUNT_POINT/usr/bin/acos-desktop"
+echo "  Created /usr/bin/acos-desktop launcher"
+
 # --- Phase 5: Unmount ---
 echo "=== Phase 5: Unmount ==="
 fusermount3 -u "$MOUNT_POINT"

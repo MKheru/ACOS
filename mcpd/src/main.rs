@@ -232,10 +232,174 @@ fn init_observability_redaction() -> mcpd_observability::redact::BootSalt {
     salt
 }
 
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::io::{Read, Write};
+use std::fs::OpenOptions;
+use sha1::{Sha1, Digest};
+
+fn handle_ws_client(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Read handshake request
+    let mut buf = [0u8; 4096];
+    let n = stream.read(&mut buf)?;
+    let request_str = String::from_utf8_lossy(&buf[..n]);
+
+    // Extract path (e.g. "/ui" or "/system")
+    let first_line = request_str.lines().next().unwrap_or("");
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err("Invalid HTTP request".into());
+    }
+    let path = parts[1].trim_start_matches('/');
+    let service_name = if path.is_empty() { "system" } else { path };
+
+    // Extract Sec-WebSocket-Key
+    let mut key = None;
+    for line in request_str.lines() {
+        if line.to_lowercase().starts_with("sec-websocket-key:") {
+            key = Some(line.split(':').nth(1).unwrap_or("").trim().to_string());
+            break;
+        }
+    }
+
+    let key = match key {
+        Some(k) => k,
+        None => return Err("Missing Sec-WebSocket-Key header".into()),
+    };
+
+    // Calculate accept key response hash
+    let mut hasher = Sha1::new();
+    hasher.update(format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key).as_bytes());
+    let result = hasher.finalize();
+    let accept_key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, result);
+
+    // Send HTTP handshake response
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\r\n",
+        accept_key
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.flush()?;
+
+    eprintln!("mcpd: WS client connected to proxy: mcp:{}", service_name);
+
+    // 2. Open local MCP scheme file
+    let scheme_path = format!("mcp:{}", service_name);
+    let mut mcp_file = match OpenOptions::new().read(true).write(true).open(&scheme_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(format!("Failed to open local MCP service '{}': {}", scheme_path, e).into());
+        }
+    };
+
+    // 3. Bidirectional communication proxy loop
+    loop {
+        let mut header = [0u8; 2];
+        if stream.read_exact(&mut header).is_err() {
+            break; // Connection closed by client
+        }
+
+        let opcode = header[0] & 0x0F;
+        if opcode == 8 {
+            break; // Close frame received
+        }
+
+        let is_masked = (header[1] & 0x80) != 0;
+        let mut payload_len = (header[1] & 0x7F) as u64;
+
+        if payload_len == 126 {
+            let mut ext_len = [0u8; 2];
+            stream.read_exact(&mut ext_len)?;
+            payload_len = u16::from_be_bytes(ext_len) as u64;
+        } else if payload_len == 127 {
+            let mut ext_len = [0u8; 8];
+            stream.read_exact(&mut ext_len)?;
+            payload_len = u64::from_be_bytes(ext_len);
+        }
+
+        let mut mask_key = [0u8; 4];
+        if is_masked {
+            stream.read_exact(&mut mask_key)?;
+        }
+
+        let mut payload = vec![0u8; payload_len as usize];
+        stream.read_exact(&mut payload)?;
+
+        if is_masked {
+            for i in 0..payload.len() {
+                payload[i] ^= mask_key[i % 4];
+            }
+        }
+
+        // Relayer text frame
+        if opcode == 1 {
+            mcp_file.write_all(&payload)?;
+            mcp_file.flush()?;
+
+            // Read response from local MCP scheme
+            let mut mcp_buf = vec![0u8; 262144];
+            let mcp_n = mcp_file.read(&mut mcp_buf)?;
+            if mcp_n > 0 {
+                let response_payload = &mcp_buf[..mcp_n];
+                // Frame response back to client WebSocket
+                let mut ws_header = Vec::new();
+                ws_header.push(0x81); // FIN = 1, Opcode = 1 (text)
+
+                let len = response_payload.len();
+                if len <= 125 {
+                    ws_header.push(len as u8);
+                } else if len <= 65535 {
+                    ws_header.push(126);
+                    ws_header.extend_from_slice(&(len as u16).to_be_bytes());
+                } else {
+                    ws_header.push(127);
+                    ws_header.extend_from_slice(&(len as u64).to_be_bytes());
+                }
+
+                stream.write_all(&ws_header)?;
+                stream.write_all(response_payload)?;
+                stream.flush()?;
+            }
+        }
+    }
+
+    eprintln!("mcpd: WS client disconnected");
+    Ok(())
+}
+
+fn start_websocket_gateway() {
+    thread::spawn(move || {
+        let listener = match TcpListener::bind("0.0.0.0:8000") {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[WARN] WebSocket gateway failed to bind to port 8000: {}", e);
+                return;
+            }
+        };
+        eprintln!("mcpd: WebSocket Gateway listening on 0.0.0.0:8000");
+
+        for stream in listener.incoming() {
+            if let Ok(stream) = stream {
+                thread::spawn(move || {
+                    if let Err(e) = handle_ws_client(stream) {
+                        eprintln!("[WARN] WebSocket client gateway error: {}", e);
+                    }
+                });
+            }
+        }
+    });
+}
+
 fn main() {
     boot_gate();
     verify_policy_files_or_die();
     let _observability_redaction_salt = init_observability_redaction();
+
+    // Start Raw WebSocket Gateway serving as a MCP-to-Host bridge
+    start_websocket_gateway();
 
     #[cfg(feature = "redox")]
     redox_daemon::start();

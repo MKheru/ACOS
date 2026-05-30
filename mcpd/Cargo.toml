@@ -19,6 +19,8 @@ mcpd-authority-shim = { path = "mcpd-authority-shim" }
 mcpd-observability = { path = "mcpd-observability" }
 serde_json = "1"
 libc = "0.2"
+sha1 = "0.10"
+base64 = "0.21"
 
 # Redox-only dependencies — resolved only when targeting Redox (cross-compile env)
 [target.'cfg(target_os = "redox")'.dependencies]
