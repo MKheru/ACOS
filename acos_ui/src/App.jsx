@@ -850,8 +850,8 @@ function App() {
                   opacity: win.isMinimized ? 0 : 1, 
                   scale: win.isMinimized ? 0.8 : 1,
                   y: win.isMinimized ? 500 : 0,
-                  transition: { duration: 0.25 }
                 }}
+                transition={{ duration: 0.25 }}
                 drag={!win.isMaximized}
                 dragConstraints={desktopRef}
                 dragHandleClassName="window-titlebar"
