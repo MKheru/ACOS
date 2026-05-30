@@ -22,45 +22,8 @@ echo "=== Injecting mcpd into Redox build tree ==="
 rm -rf "$SOURCE_DIR"
 mkdir -p "$SOURCE_DIR"
 
-# Copy mcpd crate (the binary)
-cp -r "$PROJECT_DIR/mcpd/src" "$SOURCE_DIR/src"
-cp "$PROJECT_DIR/mcpd/Cargo.toml" "$SOURCE_DIR/Cargo.toml"
-
-# Copy mcp_scheme crate (the library dependency)
-mkdir -p "$SOURCE_DIR/mcp_scheme"
-cp -r "$PROJECT_DIR/mcpd/mcp_scheme/src" "$SOURCE_DIR/mcp_scheme/src"
-cp "$PROJECT_DIR/mcpd/mcp_scheme/Cargo.toml" "$SOURCE_DIR/mcp_scheme/Cargo.toml"
-
-# Copy llm_engine crate (LLM inference dependency of mcp_scheme)
-mkdir -p "$SOURCE_DIR/llm_engine"
-cp -r "$PROJECT_DIR/mcpd/llm_engine/src" "$SOURCE_DIR/llm_engine/src"
-cp "$PROJECT_DIR/mcpd/llm_engine/Cargo.toml" "$SOURCE_DIR/llm_engine/Cargo.toml"
-
-# Copy mcp_query crate (CLI debug tool)
-mkdir -p "$SOURCE_DIR/mcp_query"
-cp -r "$PROJECT_DIR/mcpd/mcp_query/src" "$SOURCE_DIR/mcp_query/src"
-cp "$PROJECT_DIR/mcpd/mcp_query/Cargo.toml" "$SOURCE_DIR/mcp_query/Cargo.toml"
-
-# Copy mcp_talk crate (AI terminal interface)
-mkdir -p "$SOURCE_DIR/mcp_talk"
-cp -r "$PROJECT_DIR/mcpd/mcp_talk/src" "$SOURCE_DIR/mcp_talk/src"
-cp "$PROJECT_DIR/mcpd/mcp_talk/Cargo.toml" "$SOURCE_DIR/mcp_talk/Cargo.toml"
-
-# Copy acos_guardian crate (autonomous system monitor)
-echo ">>> Copying acos_guardian..."
-rm -rf "$SOURCE_DIR/acos_guardian"
-cp -r "$PROJECT_DIR/mcpd/acos_guardian" "$SOURCE_DIR/acos_guardian"
-
-# Copy acos_mux crate (terminal multiplexer)
-echo ">>> Copying acos_mux..."
-rm -rf "$SOURCE_DIR/acos_mux"
-cp -r "$PROJECT_DIR/mcpd/acos_mux" "$SOURCE_DIR/acos_mux"
-
-# Fix the path dependency in mcpd's Cargo.toml to point to local mcp_scheme
-sed -i 's|path = "../mcp_scheme"|path = "mcp_scheme"|' "$SOURCE_DIR/Cargo.toml"
-
-# Fix llm_engine path in mcp_scheme's Cargo.toml
-sed -i 's|path = "../llm_engine"|path = "../llm_engine"|' "$SOURCE_DIR/mcp_scheme/Cargo.toml"
+echo ">>> Copying entire mcpd workspace..."
+cp -r "$PROJECT_DIR"/mcpd/* "$SOURCE_DIR/"
 
 # Remove dev-dependencies (benchmarks) from mcp_scheme to avoid build issues
 # in the cross-compilation environment
@@ -72,7 +35,8 @@ rm -rf "$SOURCE_DIR/mcp_scheme/benches"
 
 echo "Source injected at: $SOURCE_DIR"
 echo "Files:"
-find "$SOURCE_DIR" -type f | sort | sed 's|^|  |'
+find "$SOURCE_DIR" -type f | sort | head -50 | sed 's|^|  |'
+echo "  ... (truncated files list)"
 
 # Re-init git repo and update recipe rev
 cd "$SOURCE_DIR"

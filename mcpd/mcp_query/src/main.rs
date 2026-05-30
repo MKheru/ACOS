@@ -275,6 +275,65 @@ fn build_params(service: &str, method: &str, extra: &[String]) -> String {
         }
         // ai/help: mcp-query ai help — no params needed
 
+        // ui/theme: mcp-query ui theme list, theme get, theme set cyberpunk, theme custom cyberpunk '{"bg":...}'
+        ("ui", "theme") if !extra.is_empty() => {
+            let action = &extra[0];
+            match action.as_str() {
+                "list" | "get" => {
+                    format!(r#"{{"action":"{}"}}"#, action)
+                }
+                "set" if extra.len() >= 2 => {
+                    let param = &extra[1];
+                    if param.starts_with('{') {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(param) {
+                            if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
+                                return format!(r#"{{"action":"set","name":"{}"}}"#, name);
+                            }
+                        }
+                    }
+                    format!(r#"{{"action":"set","name":"{}"}}"#, param.trim_matches('\'').trim_matches('"'))
+                }
+                "custom" if extra.len() >= 3 => {
+                    format!(r#"{{"action":"custom","name":"{}","colors":{}}}"#, extra[1], extra[2])
+                }
+                _ => format!(r#"{{"action":"{}"}}"#, action)
+            }
+        }
+        // ui/dom: mcp-query ui dom get [format], ui dom set '{"dom":...}', ui dom parse '{"html":...}'
+        ("ui", "dom") if !extra.is_empty() => {
+            let action = &extra[0];
+            match action.as_str() {
+                "get" => {
+                    let fmt = extra.get(1).map(|s| s.as_str()).unwrap_or("json");
+                    if fmt.starts_with('{') {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(fmt) {
+                            if let Some(format_val) = val.get("format").and_then(|f| f.as_str()) {
+                                return format!(r#"{{"action":"get","format":"{}"}}"#, format_val);
+                            }
+                        }
+                    }
+                    format!(r#"{{"action":"get","format":"{}"}}"#, fmt.trim_matches('\'').trim_matches('"'))
+                }
+                "set" if extra.len() >= 2 => {
+                    format!(r#"{{"action":"set","dom":{}}}"#, extra[1])
+                }
+                "parse" if extra.len() >= 2 => {
+                    let html = &extra[1];
+                    if html.starts_with('{') {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(html) {
+                            if let Some(html_val) = val.get("html").and_then(|h| h.as_str()) {
+                                let escaped = html_val.replace('\\', "\\\\").replace('"', "\\\"");
+                                return format!(r#"{{"action":"parse","html":"{}"}}"#, escaped);
+                            }
+                        }
+                    }
+                    let escaped = html.replace('\\', "\\\\").replace('"', "\\\"");
+                    format!(r#"{{"action":"parse","html":"{}"}}"#, escaped)
+                }
+                _ => format!(r#"{{"action":"{}"}}"#, action)
+            }
+        }
+
         // konsole: mcp-query konsole <method> [json-params]
         // konsole info 0, konsole read 0, konsole write 0 "text", konsole create agent test
         ("konsole", "info" | "read" | "clear" | "destroy") if !extra.is_empty() => {

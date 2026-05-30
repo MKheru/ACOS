@@ -24,10 +24,20 @@ pub struct Theme {
     pub colors: ThemeColors,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DomNode {
+    pub id: String,
+    pub tag: String, // "window", "button", "input", "text", "link", "container", etc.
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub children: Vec<DomNode>,
+}
+
 pub struct UiHandler {
     current_theme: Mutex<String>,
     custom_themes: Mutex<FxHashMap<String, ThemeColors>>,
     predefined_themes: FxHashMap<String, ThemeColors>,
+    virtual_dom: Mutex<DomNode>,
 }
 
 impl UiHandler {
@@ -62,10 +72,65 @@ impl UiHandler {
             "dark".to_string()
         };
 
+        // Initialize a default interactive virtual DOM tree (token-efficient for agent interaction)
+        let default_dom = DomNode {
+            id: "root-window".to_string(),
+            tag: "window".to_string(),
+            label: Some("ACOS Semantic Console Shell".to_string()),
+            value: None,
+            children: vec![
+                DomNode {
+                    id: "nav-bar".to_string(),
+                    tag: "container".to_string(),
+                    label: Some("Navigation Controls".to_string()),
+                    value: None,
+                    children: vec![
+                        DomNode {
+                            id: "btn-back".to_string(),
+                            tag: "button".to_string(),
+                            label: Some("Back".to_string()),
+                            value: None,
+                            children: vec![],
+                        },
+                        DomNode {
+                            id: "address-input".to_string(),
+                            tag: "input".to_string(),
+                            label: Some("Search or URL".to_string()),
+                            value: Some("mcp://welcome".to_string()),
+                            children: vec![],
+                        },
+                    ],
+                },
+                DomNode {
+                    id: "main-content".to_string(),
+                    tag: "container".to_string(),
+                    label: Some("Primary Interactive Viewport".to_string()),
+                    value: None,
+                    children: vec![
+                        DomNode {
+                            id: "title-display".to_string(),
+                            tag: "text".to_string(),
+                            label: Some("ACOS Rich Interface WS10".to_string()),
+                            value: None,
+                            children: vec![],
+                        },
+                        DomNode {
+                            id: "submit-action".to_string(),
+                            tag: "button".to_string(),
+                            label: Some("Execute Agent Routine".to_string()),
+                            value: None,
+                            children: vec![],
+                        },
+                    ],
+                },
+            ],
+        };
+
         Self {
             current_theme: Mutex::new(current_theme),
             custom_themes: Mutex::new(FxHashMap::default()),
             predefined_themes: predefined,
+            virtual_dom: Mutex::new(default_dom),
         }
     }
 
@@ -79,15 +144,40 @@ impl UiHandler {
             eprintln!("[WARN] Failed to write theme configuration: {}", e);
         }
     }
+
+    fn render_dom_to_markdown(&self, node: &DomNode, depth: usize) -> String {
+        let indent = "  ".repeat(depth);
+        let mut out = format!("{}{}: [{}]", indent, node.tag.to_uppercase(), node.id);
+        if let Some(lbl) = &node.label {
+            out.push_str(&format!(" label=\"{}\"", lbl));
+        }
+        if let Some(val) = &node.value {
+            out.push_str(&format!(" value=\"{}\"", val));
+        }
+        out.push_str("\n");
+        for child in &node.children {
+            out.push_str(&self.render_dom_to_markdown(child, depth + 1));
+        }
+        out
+    }
 }
 
 impl ServiceHandler for UiHandler {
     fn handle(&self, path: &McpPath, request: &JsonRpcRequest) -> JsonRpcResponse {
-        let resource_type = path.resource.get(0).map(|s| s.as_str()).unwrap_or("");
+        // Support both MCP path routing (e.g. mcp:ui/theme/list) and JSON-RPC method routing (e.g. mcp-query shorthand)
+        let resource_type = if !path.resource.is_empty() {
+            path.resource[0].as_str()
+        } else {
+            request.method.as_str()
+        };
 
         match resource_type {
             "theme" => {
-                let sub_action = path.resource.get(1).map(|s| s.as_str()).unwrap_or("");
+                let sub_action = if path.resource.len() >= 2 {
+                    path.resource[1].as_str()
+                } else {
+                    request.params.get("action").and_then(|a| a.as_str()).unwrap_or("")
+                };
                 match sub_action {
                     "list" => {
                         let mut list: Vec<String> = self.predefined_themes.keys().cloned().collect();
@@ -146,12 +236,114 @@ impl ServiceHandler for UiHandler {
                 }
             }
             "dom" => {
-                // Servo DOM integration stub (Formatting aligned with token-efficient accessibility trees)
-                JsonRpcResponse::success(request.id.clone(), json!({
-                    "servo_dom_status": "stub",
-                    "info": "Exposes simplified, semantic JSON/Markdown DOM layout trees containing only interactable components to callers.",
-                    "details": "Planned in WS10 Phase B"
-                }))
+                let sub_action = if path.resource.len() >= 2 {
+                    path.resource[1].as_str()
+                } else {
+                    request.params.get("action").and_then(|a| a.as_str()).unwrap_or("")
+                };
+                match sub_action {
+                    "get" => {
+                        let dom = self.virtual_dom.lock().unwrap().clone();
+                        let format_param = request.params.get("format").and_then(|f| f.as_str()).unwrap_or("json");
+
+                        if format_param == "markdown" {
+                            let md = self.render_dom_to_markdown(&dom, 0);
+                            JsonRpcResponse::success(request.id.clone(), json!({ "format": "markdown", "dom": md }))
+                        } else {
+                            JsonRpcResponse::success(request.id.clone(), json!({ "format": "json", "dom": dom }))
+                        }
+                    }
+                    "set" => {
+                        let new_dom_val = request.params.get("dom");
+                        if let Some(new_dom_val) = new_dom_val {
+                            if let Ok(new_dom) = serde_json::from_value::<DomNode>(new_dom_val.clone()) {
+                                *self.virtual_dom.lock().unwrap() = new_dom;
+                                return JsonRpcResponse::success(request.id.clone(), json!({ "status": "ok" }));
+                            }
+                        }
+                        JsonRpcResponse::error(request.id.clone(), INVALID_PARAMS, "Invalid or missing 'dom' tree parameter")
+                    }
+                    "parse" => {
+                        let html_val = request.params.get("html");
+                        if let Some(html) = html_val.and_then(|h| h.as_str()) {
+                            // High performance token-efficient heuristic HTML parser for micro-DOM tree creation
+                            // Filters structure divs, scripts, styles, keeping only text, links, and interactive nodes.
+                            let mut root = DomNode {
+                                id: "parsed-root".to_string(),
+                                tag: "container".to_string(),
+                                label: Some("Parsed Viewport".to_string()),
+                                value: None,
+                                children: vec![],
+                            };
+
+                            // Simplified semantic text element extraction
+                            let mut node_idx = 1;
+                            if html.contains("<button") || html.contains("<input") || html.contains("<a") {
+                                for word in html.split('<') {
+                                    if word.starts_with("button") {
+                                        if let Some(lbl) = word.split('>').nth(1).and_then(|s| s.split('<').next()) {
+                                            root.children.push(DomNode {
+                                                id: format!("parsed-btn-{}", node_idx),
+                                                tag: "button".to_string(),
+                                                label: Some(lbl.trim().to_string()),
+                                                value: None,
+                                                children: vec![],
+                                            });
+                                            node_idx += 1;
+                                        }
+                                    } else if word.starts_with("input") {
+                                        let placeholder = word.split("placeholder=\"").nth(1)
+                                            .and_then(|s| s.split('"').next())
+                                            .map(|s| s.to_string());
+                                        let value = word.split("value=\"").nth(1)
+                                            .and_then(|s| s.split('"').next())
+                                            .map(|s| s.to_string());
+
+                                        root.children.push(DomNode {
+                                            id: format!("parsed-input-{}", node_idx),
+                                            tag: "input".to_string(),
+                                            label: placeholder.or(Some("User Input".to_string())),
+                                            value,
+                                            children: vec![],
+                                        });
+                                        node_idx += 1;
+                                    } else if word.starts_with("a ") || word.starts_with("a>") {
+                                        let href = word.split("href=\"").nth(1)
+                                            .and_then(|s| s.split('"').next())
+                                            .map(|s| s.to_string());
+                                        if let Some(lbl) = word.split('>').nth(1).and_then(|s| s.split('<').next()) {
+                                            root.children.push(DomNode {
+                                                id: format!("parsed-link-{}", node_idx),
+                                                tag: "link".to_string(),
+                                                label: Some(lbl.trim().to_string()),
+                                                value: href,
+                                                children: vec![],
+                                            });
+                                            node_idx += 1;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Default semantic fallback mapping plain text
+                                root.children.push(DomNode {
+                                    id: "parsed-text-1".to_string(),
+                                    tag: "text".to_string(),
+                                    label: Some(html.trim().to_string()),
+                                    value: None,
+                                    children: vec![],
+                                });
+                            }
+
+                            return JsonRpcResponse::success(request.id.clone(), json!({
+                                "status": "parsed",
+                                "node_count": node_idx - 1,
+                                "dom": root
+                            }));
+                        }
+                        JsonRpcResponse::error(request.id.clone(), INVALID_PARAMS, "Missing 'html' parameter")
+                    }
+                    _ => JsonRpcResponse::error(request.id.clone(), METHOD_NOT_FOUND, "Unknown DOM action")
+                }
             }
             "render" => {
                 // Servo page rendering integration stub
@@ -169,3 +361,4 @@ impl ServiceHandler for UiHandler {
         vec!["list", "get", "set", "custom", "dom", "render"]
     }
 }
+
